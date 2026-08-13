@@ -1,0 +1,193 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  STAFF
+  VENDOR
+  RIDER
+}
+
+enum ShipmentStatus {
+  PENDING
+  RECEIVED
+  PROCESSING
+  IN_WAREHOUSE
+  DISPATCHED
+  IN_TRANSIT
+  ARRIVED
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+  RETURNED
+}
+
+enum PackageType {
+  DOCUMENT
+  PARCEL
+  BOX
+  ELECTRONICS
+  CLOTHING
+  FOOD
+  FRAGILE
+  OTHER
+}
+
+enum PaymentType {
+  PREPAID
+  COD
+}
+
+model User {
+  id       Int    @id @default(autoincrement())
+  name     String
+  email    String @unique
+  password String
+  role     Role
+
+  vendor Vendor?
+  rider  Rider?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Vendor {
+  id          Int    @id @default(autoincrement())
+  companyName String
+  contactId   String
+  location    String
+
+  userId Int  @unique
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  shipments Shipment[]
+
+createdAt DateTime @default(now())
+updatedAt DateTime @default(now()) @updatedAt
+}
+
+model Rider {
+  id Int @id @default(autoincrement())
+
+  phone String
+
+  latitude  Float?
+  longitude Float?
+
+  isAvailable Boolean @default(true)
+
+  userId Int  @unique
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  shipments Shipment[]
+
+  locations RiderLocation[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Shipment {
+  id String @id @default(cuid())
+
+  trackingNumber String @unique
+
+  receiverName    String
+  receiverPhone   String
+  receiverAddress String
+
+  packageType PackageType
+  weight      Float
+
+  paymentType PaymentType @default(PREPAID)
+  codAmount   Float       @default(0)
+
+  shippingCharge Float
+
+  notes String?
+
+  qrCode String?
+
+  status ShipmentStatus @default(PENDING)
+
+  vendorId Int
+  vendor   Vendor @relation(fields: [vendorId], references: [id])
+
+  riderId Int?
+  rider   Rider? @relation(fields: [riderId], references: [id])
+
+  priceLocationId Int
+  priceLocation   PriceByLocation @relation(fields: [priceLocationId], references: [id])
+
+  trackings Tracking[]
+
+  notifications Notification[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Tracking {
+  id String @id @default(cuid())
+
+  shipmentId String
+  shipment   Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  status ShipmentStatus
+
+  location String
+
+  message String
+
+  createdAt DateTime @default(now())
+
+  @@index([shipmentId])
+}
+
+model RiderLocation {
+  id Int @id @default(autoincrement())
+
+  riderId Int
+  rider   Rider @relation(fields: [riderId], references: [id], onDelete: Cascade)
+
+  latitude  Float
+  longitude Float
+
+  createdAt DateTime @default(now())
+
+  @@index([riderId])
+}
+
+model Notification {
+  id Int @id @default(autoincrement())
+
+  shipmentId String
+  shipment   Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  title   String
+  message String
+
+  isRead Boolean @default(false)
+
+  createdAt DateTime @default(now())
+}
+
+model PriceByLocation {
+  id Int @id @default(autoincrement())
+
+  location String @unique
+
+  price Float
+
+  shipments Shipment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
