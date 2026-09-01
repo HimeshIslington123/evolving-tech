@@ -19,9 +19,13 @@ dotenv.config();
 const app = express();
 
 app.use(express.json());
+
 app.use(
   cors({
-    origin: "http://localhost:3000",
+    origin: [
+      "http://localhost:3000",
+      "https://rocket-shipping-nepal.vercel.app",
+    ],
     credentials: true,
   })
 );
