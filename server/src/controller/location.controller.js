@@ -1,16 +1,21 @@
-
 import prisma from "../config/prisma.js";
-export const getLocations = async (req,res)=>{
 
- const locations = await prisma.priceByLocation.findMany({
-   orderBy:{
-      location:"asc"
-   }
- })
+export const getLocations = async (req, res) => {
+  try {
+    const locations = await prisma.priceByLocation.findMany({
+      orderBy: {
+        location: "asc",
+      },
+    });
 
- res.json(locations)
+    res.json(locations);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server Error" });
+  }
+};
 
-}
+
 export const createLocationPrice = async (req, res) => {
   try {
     const { location, price } = req.body;
@@ -21,7 +26,6 @@ export const createLocationPrice = async (req, res) => {
       });
     }
 
-    // Check if location already exists
     const existing = await prisma.priceByLocation.findUnique({
       where: {
         location,
@@ -44,6 +48,101 @@ export const createLocationPrice = async (req, res) => {
     res.status(201).json({
       message: "Location price created successfully.",
       locationPrice,
+    });
+
+  } catch (err) {
+    console.error(err);
+
+    res.status(500).json({
+      message: "Server Error",
+    });
+  }
+};
+
+
+// UPDATE LOCATION PRICE
+export const updateLocationPrice = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { location, price } = req.body;
+
+    const existing = await prisma.priceByLocation.findUnique({
+      where: {
+        id: Number(id),
+      },
+    });
+
+    if (!existing) {
+      return res.status(404).json({
+        message: "Location not found.",
+      });
+    }
+
+    // Check duplicate location name
+    if (location && location !== existing.location) {
+      const duplicate = await prisma.priceByLocation.findUnique({
+        where: {
+          location,
+        },
+      });
+
+      if (duplicate) {
+        return res.status(400).json({
+          message: "Location already exists.",
+        });
+      }
+    }
+
+    const updatedLocation = await prisma.priceByLocation.update({
+      where: {
+        id: Number(id),
+      },
+      data: {
+        location: location ?? existing.location,
+        price: price != null ? Number(price) : existing.price,
+      },
+    });
+
+    res.json({
+      message: "Location price updated successfully.",
+      locationPrice: updatedLocation,
+    });
+
+  } catch (err) {
+    console.error(err);
+
+    res.status(500).json({
+      message: "Server Error",
+    });
+  }
+};
+
+
+// DELETE LOCATION PRICE
+export const deleteLocationPrice = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const existing = await prisma.priceByLocation.findUnique({
+      where: {
+        id: Number(id),
+      },
+    });
+
+    if (!existing) {
+      return res.status(404).json({
+        message: "Location not found.",
+      });
+    }
+
+    await prisma.priceByLocation.delete({
+      where: {
+        id: Number(id),
+      },
+    });
+
+    res.json({
+      message: "Location price deleted successfully.",
     });
 
   } catch (err) {
