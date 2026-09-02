@@ -14,6 +14,7 @@ import locationRateRoutes from "./src/routes/locationRateroutes.js"
 import deliveryTypeRoutes from "./src/routes/deliveryTyperoutes.js"
 import userRoutes from "./src/routes/userRoutes.js"
 import locationMap from "./src/routes/location.routes.js"
+import returnRoutes from "./src/routes/returnRoutes.js"
 dotenv.config();
 
 const app = express();
@@ -39,7 +40,7 @@ app.use("/api/users", userRoutes);
 app.use("/api/locationRate", locationMap);
 //app.use("/api/locationRate", locationRateRoutes);
 app.use("/api/rider", riderRoutes);
-
+app.use("/api/returns", returnRoutes);
 app.use("/api/pickups", pickupRoutes);
 app.use("/api/deliveryType", deliveryTypeRoutes);
 

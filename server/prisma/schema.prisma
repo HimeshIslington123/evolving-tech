@@ -18,12 +18,45 @@ enum Role {
   RIDER
 }
 
+// ======================================================
+// RETURN ENUMS
+// ======================================================
+
+enum ReturnStatus {
+  REQUESTED
+  ASSIGNED_TO_RIDER
+  PICKED_UP_FROM_CUSTOMER
+  IN_WAREHOUSE
+  OUT_FOR_RETURN
+  RETURNED_TO_VENDOR
+  CANCELLED
+}
+
+enum ReturnReason {
+  CUSTOMER_CHANGED_MIND
+  WRONG_PRODUCT
+  DAMAGED_PRODUCT
+  DEFECTIVE_PRODUCT
+  WRONG_SIZE
+  WRONG_COLOR
+  PRODUCT_NOT_AS_DESCRIBED
+  OTHER
+}
+
+// ======================================================
+// PICKUP ENUM
+// ======================================================
+
 enum PickupStatus {
   REQUESTED
   ASSIGNED
   PICKUP_DONE
   CANCELLED
 }
+
+// ======================================================
+// SHIPMENT ENUMS
+// ======================================================
 
 enum ShipmentOrigin {
   VENDOR
@@ -41,7 +74,14 @@ enum ShipmentStatus {
   ASSIGNED_TO_RIDER
   OUT_FOR_DELIVERY
   DELIVERED
-  RETURNED
+
+  RETURN_REQUESTED
+  RETURN_ASSIGNED_TO_RIDER
+  RETURN_PICKED_UP_FROM_CUSTOMER
+  RETURN_IN_WAREHOUSE
+  OUT_FOR_RETURN
+  RETURNED_TO_VENDOR
+
   CANCELLED
 }
 
@@ -66,12 +106,13 @@ enum PaymentType {
 // ======================================================
 
 model User {
-  id       Int    @id @default(autoincrement())
+  id       Int     @id @default(autoincrement())
   name     String
-  email    String @unique
+  email    String  @unique
   password String
   role     Role
   isActive Boolean @default(true)
+
   vendor Vendor?
   rider  Rider?
   staff  Staff?
@@ -92,10 +133,11 @@ model Vendor {
   location    String
 
   userId Int  @unique
-  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user   User @relation(fields: [userId], references: [id])
 
   shipments Shipment[]
-  pickups   Pickup[]
+
+  pickups Pickup[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -112,7 +154,7 @@ model Staff {
   profilePicture String?
 
   userId Int  @unique
-  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user   User @relation(fields: [userId], references: [id])
 
   createdShipments Shipment[] @relation("CreatedByStaff")
 
@@ -136,14 +178,15 @@ model Rider {
   isAvailable Boolean @default(true)
 
   userId Int  @unique
-  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user   User @relation(fields: [userId], references: [id])
 
   shipments Shipment[]
 
   locations RiderLocation[]
 
-  // Pickups assigned to this rider
   pickups Pickup[]
+
+  returnRequests ReturnRequest[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -161,28 +204,15 @@ model Pickup {
   pickupAddress String
   pickupPhone   String
 
-  // REQUESTED -> ASSIGNED -> PICKUP_DONE
-  // REQUESTED -> CANCELLED
-  // ASSIGNED  -> CANCELLED
   status PickupStatus @default(REQUESTED)
 
   notes String?
 
-  // ====================================================
-  // VENDOR
-  // ====================================================
-
   vendorId Int
-  vendor   Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  vendor   Vendor @relation(fields: [vendorId], references: [id])
 
-  // ====================================================
-  // RIDER
-  // ====================================================
-
-  // Null when pickup is REQUESTED
-  // Contains rider ID when ASSIGNED/PICKUP_DONE
   riderId Int?
-  rider   Rider? @relation(fields: [riderId], references: [id], onDelete: SetNull)
+  rider   Rider? @relation(fields: [riderId], references: [id])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -232,10 +262,10 @@ model LocationRate {
   id Int @id @default(autoincrement())
 
   locationId Int
-  location   Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  location   Location @relation(fields: [locationId], references: [id])
 
   deliveryTypeId Int
-  deliveryType   DeliveryType @relation(fields: [deliveryTypeId], references: [id], onDelete: Cascade)
+  deliveryType   DeliveryType @relation(fields: [deliveryTypeId], references: [id])
 
   price Float
 
@@ -303,67 +333,33 @@ model Shipment {
   notes  String?
   qrCode String?
 
-  // ====================================================
-  // WORKFLOW
-  // ====================================================
-
   origin ShipmentOrigin
 
   deliveryZone DeliveryZone?
 
   status ShipmentStatus @default(CREATED)
 
-  // ====================================================
-  // VENDOR
-  // ====================================================
-
   vendorId Int?
   vendor   Vendor? @relation(fields: [vendorId], references: [id])
-
-  // ====================================================
-  // STAFF WHO CREATED SHIPMENT
-  // ====================================================
 
   createdByStaffId Int?
   createdByStaff   Staff? @relation("CreatedByStaff", fields: [createdByStaffId], references: [id])
 
-  // ====================================================
-  // RIDER
-  // ====================================================
-
   riderId Int?
   rider   Rider? @relation(fields: [riderId], references: [id])
-
-  // ====================================================
-  // CURRENT WAREHOUSE
-  // ====================================================
 
   warehouseId Int?
   warehouse   Warehouse? @relation(fields: [warehouseId], references: [id])
 
-  // ====================================================
-  // OUTSIDE VALLEY CARRIER
-  // ====================================================
-
   carrierId Int?
   carrier   Carrier? @relation(fields: [carrierId], references: [id])
-
-  // ====================================================
-  // SHIPPING RATE
-  // ====================================================
 
   locationRateId Int
   locationRate   LocationRate @relation(fields: [locationRateId], references: [id])
 
-  // ====================================================
-  // TRACKING
-  // ====================================================
-
   trackings Tracking[]
 
-  // ====================================================
-  // NOTIFICATIONS
-  // ====================================================
+  returnRequest ReturnRequest?
 
   notifications Notification[]
 
@@ -378,14 +374,65 @@ model Shipment {
 }
 
 // ======================================================
-// TRACKING HISTORY
+// RETURN REQUEST
+// ======================================================
+//
+// SAME SHIPMENT
+// SAME TRACKING NUMBER
+// SAME TRACKING TABLE
+//
+// NO returnTrackingNumber
+//
+// ======================================================
+
+model ReturnRequest {
+  id String @id @default(cuid())
+
+  shipmentId String   @unique
+  shipment   Shipment @relation(fields: [shipmentId], references: [id])
+
+  status ReturnStatus @default(REQUESTED)
+
+  reason ReturnReason
+
+  description String?
+
+  riderId Int?
+  rider   Rider? @relation(fields: [riderId], references: [id])
+
+  returnCharge Float @default(0)
+
+  requestedAt DateTime @default(now())
+
+  pickedUpAt DateTime?
+
+  completedAt DateTime?
+
+  notes String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([riderId])
+}
+
+// ======================================================
+// TRACKING
+// ======================================================
+//
+// ORIGINAL + RETURN TRACKING
+//
+// SAME shipmentId
+// SAME Shipment.trackingNumber
+//
 // ======================================================
 
 model Tracking {
   id String @id @default(cuid())
 
   shipmentId String
-  shipment   Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  shipment   Shipment @relation(fields: [shipmentId], references: [id])
 
   status ShipmentStatus
 
@@ -408,7 +455,7 @@ model RiderLocation {
   id Int @id @default(autoincrement())
 
   riderId Int
-  rider   Rider @relation(fields: [riderId], references: [id], onDelete: Cascade)
+  rider   Rider @relation(fields: [riderId], references: [id])
 
   latitude  Float
   longitude Float
@@ -426,10 +473,9 @@ model Notification {
   id Int @id @default(autoincrement())
 
   shipmentId String
-  shipment   Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  shipment   Shipment @relation(fields: [shipmentId], references: [id])
 
-  title String
-
+  title   String
   message String
 
   isRead Boolean @default(false)

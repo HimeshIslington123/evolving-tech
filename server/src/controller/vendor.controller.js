@@ -31,7 +31,7 @@ export const getVendors = async (req, res) => {
 
 export const getVendorDashboard = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = Number(req.user.id);
 
     // ==================================================
     // FIND VENDOR
@@ -72,7 +72,7 @@ export const getVendorDashboard = async (req, res) => {
       cancelledOrders,
     ] = await Promise.all([
       // ------------------------------------------------
-      // TOTAL
+      // TOTAL SHIPMENTS
       // ------------------------------------------------
 
       prisma.shipment.count({
@@ -137,13 +137,18 @@ export const getVendorDashboard = async (req, res) => {
       }),
 
       // ------------------------------------------------
-      // RETURNED
+      // RETURNED TO VENDOR
+      // ------------------------------------------------
+      //
+      // ReturnRequest has its own status.
       // ------------------------------------------------
 
-      prisma.shipment.count({
+      prisma.returnRequest.count({
         where: {
-          vendorId,
-          status: "RETURNED",
+          shipment: {
+            vendorId,
+          },
+          status: "RETURNED_TO_VENDOR",
         },
       }),
 
@@ -183,25 +188,27 @@ export const getVendorDashboard = async (req, res) => {
       },
     });
 
-    const totalCOD = totalCODResult._sum.codAmount ?? 0;
+    const totalCOD =
+      totalCODResult._sum.codAmount ?? 0;
 
     // --------------------------------------------------
     // COD COLLECTED
     // --------------------------------------------------
 
-    const codCollectedResult = await prisma.shipment.aggregate({
-      _sum: {
-        codAmount: true,
-      },
+    const codCollectedResult =
+      await prisma.shipment.aggregate({
+        _sum: {
+          codAmount: true,
+        },
 
-      where: {
-        vendorId,
+        where: {
+          vendorId,
 
-        paymentType: "COD",
+          paymentType: "COD",
 
-        status: "DELIVERED",
-      },
-    });
+          status: "DELIVERED",
+        },
+      });
 
     const codCollected =
       codCollectedResult._sum.codAmount ?? 0;
@@ -255,13 +262,15 @@ export const getVendorDashboard = async (req, res) => {
       });
 
     const shippingChargesPaid =
-      deliveredShippingChargesResult._sum.shippingCharge ?? 0;
+      deliveredShippingChargesResult._sum
+        .shippingCharge ?? 0;
 
     // --------------------------------------------------
     // BILL TO PAY
     // --------------------------------------------------
 
-    const billToPay = totalShippingCharges;
+    const billToPay =
+      totalShippingCharges;
 
     // --------------------------------------------------
     // AVERAGE SHIPPING CHARGE
@@ -283,7 +292,8 @@ export const getVendorDashboard = async (req, res) => {
       });
 
     const averageShippingCharge =
-      averageShippingChargeResult._avg.shippingCharge ?? 0;
+      averageShippingChargeResult._avg
+        .shippingCharge ?? 0;
 
     // ==================================================
     // PICKUP STATISTICS
@@ -297,7 +307,7 @@ export const getVendorDashboard = async (req, res) => {
       cancelledPickups,
     ] = await Promise.all([
       // ------------------------------------------------
-      // TOTAL PICKUPS
+      // TOTAL
       // ------------------------------------------------
 
       prisma.pickup.count({
@@ -329,7 +339,7 @@ export const getVendorDashboard = async (req, res) => {
       }),
 
       // ------------------------------------------------
-      // PICKUP DONE
+      // COMPLETED
       // ------------------------------------------------
 
       prisma.pickup.count({
@@ -398,9 +408,17 @@ export const getVendorDashboard = async (req, res) => {
 
           status: true,
 
+          origin: true,
+
+          deliveryZone: true,
+
           vendorId: true,
 
           riderId: true,
+
+          warehouseId: true,
+
+          carrierId: true,
 
           locationRateId: true,
 
@@ -419,11 +437,74 @@ export const getVendorDashboard = async (req, res) => {
 
             select: {
               id: true,
+
               shipmentId: true,
+
               status: true,
+
               location: true,
+
               message: true,
+
+              createdBy: true,
+
               createdAt: true,
+            },
+          },
+
+          // ------------------------------------------------
+          // RETURN REQUEST
+          // ------------------------------------------------
+          //
+          // IMPORTANT:
+          // There is NO returnTrackingNumber.
+          //
+          // Returns continue using:
+          // shipment.trackingNumber
+          //
+          // ------------------------------------------------
+
+          returnRequest: {
+            select: {
+              id: true,
+
+              shipmentId: true,
+
+              status: true,
+
+              reason: true,
+
+              description: true,
+
+              returnCharge: true,
+
+              requestedAt: true,
+
+              pickedUpAt: true,
+
+              completedAt: true,
+
+              notes: true,
+
+              riderId: true,
+
+              rider: {
+                select: {
+                  id: true,
+
+                  phone: true,
+
+                  user: {
+                    select: {
+                      id: true,
+
+                      name: true,
+
+                      email: true,
+                    },
+                  },
+                },
+              },
             },
           },
 
@@ -446,10 +527,40 @@ export const getVendorDashboard = async (req, res) => {
               user: {
                 select: {
                   id: true,
+
                   name: true,
+
                   email: true,
                 },
               },
+            },
+          },
+
+          // ------------------------------------------------
+          // WAREHOUSE
+          // ------------------------------------------------
+
+          warehouse: {
+            select: {
+              id: true,
+
+              name: true,
+
+              city: true,
+            },
+          },
+
+          // ------------------------------------------------
+          // CARRIER
+          // ------------------------------------------------
+
+          carrier: {
+            select: {
+              id: true,
+
+              name: true,
+
+              phone: true,
             },
           },
         },
@@ -467,11 +578,14 @@ export const getVendorDashboard = async (req, res) => {
       vendor: {
         id: vendor.id,
 
-        companyName: vendor.companyName,
+        companyName:
+          vendor.companyName,
 
-        contactId: vendor.contactId,
+        contactId:
+          vendor.contactId,
 
-        location: vendor.location,
+        location:
+          vendor.location,
       },
 
       // ==================================================
@@ -481,33 +595,33 @@ export const getVendorDashboard = async (req, res) => {
       orders: {
         total: totalOrders,
 
-        // CREATED = pending/new shipment
         pending: createdOrders,
 
-        // Your Prisma schema does not have RECEIVED
         received: 0,
 
-        // Your Prisma schema does not have PROCESSING
         processing: 0,
 
-        inWarehouse: warehouseOrders,
+        inWarehouse:
+          warehouseOrders,
 
-        // Your Prisma schema does not have DISPATCHED
         dispatched: 0,
 
-        // ASSIGNED_TO_RIDER
-        inTransit: assignedToRiderOrders,
+        inTransit:
+          assignedToRiderOrders,
 
-        // Your Prisma schema does not have ARRIVED
         arrived: 0,
 
-        outForDelivery: outForDeliveryOrders,
+        outForDelivery:
+          outForDeliveryOrders,
 
-        delivered: deliveredOrders,
+        delivered:
+          deliveredOrders,
 
-        cancelled: cancelledOrders,
+        cancelled:
+          cancelledOrders,
 
-        returned: returnedOrders,
+        returned:
+          returnedOrders,
       },
 
       // ==================================================
@@ -515,14 +629,15 @@ export const getVendorDashboard = async (req, res) => {
       // ==================================================
 
       finance: {
-        // COD
-        totalCOD: Number(totalCOD),
+        totalCOD:
+          Number(totalCOD),
 
-        codCollected: Number(codCollected),
+        codCollected:
+          Number(codCollected),
 
-        codPending: Number(codPending),
+        codPending:
+          Number(codPending),
 
-        // SHIPPING
         totalShippingCharges:
           Number(totalShippingCharges),
 
@@ -534,15 +649,14 @@ export const getVendorDashboard = async (req, res) => {
 
         averageShippingCharge:
           Number(
-            Number(averageShippingCharge).toFixed(2)
+            Number(
+              averageShippingCharge
+            ).toFixed(2)
           ),
 
-        // Your Shipment model currently has no
-        // shipping-cost field.
-        totalShippingCost: null,
+        totalShippingCost:
+          null,
 
-        // Currently treating shipping charges
-        // as vendor revenue.
         totalRevenue:
           Number(totalShippingCharges),
       },
@@ -552,15 +666,20 @@ export const getVendorDashboard = async (req, res) => {
       // ==================================================
 
       pickups: {
-        total: totalPickups,
+        total:
+          totalPickups,
 
-        requested: requestedPickups,
+        requested:
+          requestedPickups,
 
-        assigned: assignedPickups,
+        assigned:
+          assignedPickups,
 
-        completed: completedPickups,
+        completed:
+          completedPickups,
 
-        cancelled: cancelledPickups,
+        cancelled:
+          cancelledPickups,
       },
 
       // ==================================================
@@ -584,18 +703,18 @@ export const getVendorDashboard = async (req, res) => {
   }
 };
 
-
-
-
 // ======================================================
 // STAFF DASHBOARD
 // ======================================================
 
-export const getStaffDashboard = async (req, res) => {
+export const getStaffDashboard = async (
+  req,
+  res
+) => {
   try {
-    // --------------------------------------------------
+    // ==================================================
     // SHIPMENT COUNTS
-    // --------------------------------------------------
+    // ==================================================
 
     const [
       totalShipments,
@@ -606,79 +725,99 @@ export const getStaffDashboard = async (req, res) => {
       delivered,
       returned,
       cancelled,
-
-      // ------------------------------------------------
-      // REQUESTED PICKUPS ONLY
-      // ------------------------------------------------
-
       requestedPickups,
-
-      // ------------------------------------------------
-      // TOP 3 RECENT SHIPMENTS
-      // ------------------------------------------------
-
       recentShipments,
     ] = await Promise.all([
+      // ------------------------------------------------
       // TOTAL
+      // ------------------------------------------------
+
       prisma.shipment.count(),
 
+      // ------------------------------------------------
       // CREATED
+      // ------------------------------------------------
+
       prisma.shipment.count({
         where: {
           status: "CREATED",
         },
       }),
 
+      // ------------------------------------------------
       // IN WAREHOUSE
+      // ------------------------------------------------
+
       prisma.shipment.count({
         where: {
           status: "IN_WAREHOUSE",
         },
       }),
 
-      // ASSIGNED TO RIDER
+      // ------------------------------------------------
+      // ASSIGNED
+      // ------------------------------------------------
+
       prisma.shipment.count({
         where: {
           status: "ASSIGNED_TO_RIDER",
         },
       }),
 
+      // ------------------------------------------------
       // OUT FOR DELIVERY
+      // ------------------------------------------------
+
       prisma.shipment.count({
         where: {
           status: "OUT_FOR_DELIVERY",
         },
       }),
 
+      // ------------------------------------------------
       // DELIVERED
+      // ------------------------------------------------
+
       prisma.shipment.count({
         where: {
           status: "DELIVERED",
         },
       }),
 
+      // ------------------------------------------------
       // RETURNED
-      prisma.shipment.count({
+      // ------------------------------------------------
+
+      prisma.returnRequest.count({
         where: {
-          status: "RETURNED",
+          status: "RETURNED_TO_VENDOR",
         },
       }),
 
+      // ------------------------------------------------
       // CANCELLED
+      // ------------------------------------------------
+
       prisma.shipment.count({
         where: {
           status: "CANCELLED",
         },
       }),
 
-      // REQUESTED PICKUPS ONLY
+      // ------------------------------------------------
+      // REQUESTED PICKUPS
+      // ------------------------------------------------
+
       prisma.pickup.count({
         where: {
           status: "REQUESTED",
         },
       }),
 
-      // TOP 3 RECENT SHIPMENTS
+      // ------------------------------------------------
+      // RECENT SHIPMENTS
+      // ------------------------------------------------
+
       prisma.shipment.findMany({
         orderBy: {
           createdAt: "desc",
@@ -687,55 +826,157 @@ export const getStaffDashboard = async (req, res) => {
         take: 3,
 
         select: {
+          // ------------------------------------------------
+          // SHIPMENT
+          // ------------------------------------------------
+
           id: true,
+
           trackingNumber: true,
 
           receiverName: true,
+
           receiverPhone: true,
+
           receiverAddress: true,
 
           packageType: true,
+
           weight: true,
 
           paymentType: true,
+
           codAmount: true,
+
           shippingCharge: true,
 
           status: true,
 
+          origin: true,
+
+          deliveryZone: true,
+
           createdAt: true,
+
+          updatedAt: true,
+
+          // ------------------------------------------------
+          // RETURN
+          // ------------------------------------------------
+
+          returnRequest: {
+            select: {
+              id: true,
+
+              shipmentId: true,
+
+              status: true,
+
+              reason: true,
+
+              description: true,
+
+              returnCharge: true,
+
+              requestedAt: true,
+
+              pickedUpAt: true,
+
+              completedAt: true,
+
+              notes: true,
+
+              riderId: true,
+
+              rider: {
+                select: {
+                  id: true,
+
+                  phone: true,
+
+                  user: {
+                    select: {
+                      id: true,
+
+                      name: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+
+          // ------------------------------------------------
+          // VENDOR
+          // ------------------------------------------------
 
           vendor: {
             select: {
               id: true,
+
               companyName: true,
             },
           },
 
+          // ------------------------------------------------
+          // RIDER
+          // ------------------------------------------------
+
           rider: {
             select: {
               id: true,
+
               phone: true,
 
               user: {
                 select: {
                   id: true,
+
                   name: true,
                 },
               },
+            },
+          },
+
+          // ------------------------------------------------
+          // WAREHOUSE
+          // ------------------------------------------------
+
+          warehouse: {
+            select: {
+              id: true,
+
+              name: true,
+
+              city: true,
+            },
+          },
+
+          // ------------------------------------------------
+          // CARRIER
+          // ------------------------------------------------
+
+          carrier: {
+            select: {
+              id: true,
+
+              name: true,
+
+              phone: true,
             },
           },
         },
       }),
     ]);
 
-    // --------------------------------------------------
+    // ==================================================
     // RESPONSE
-    // --------------------------------------------------
+    // ==================================================
 
     return res.json({
       shipments: {
-        total: totalShipments,
+        total:
+          totalShipments,
 
         created,
 
@@ -753,13 +994,17 @@ export const getStaffDashboard = async (req, res) => {
       },
 
       pickups: {
-        requested: requestedPickups,
+        requested:
+          requestedPickups,
       },
 
       recentShipments,
     });
   } catch (err) {
-    console.error("STAFF DASHBOARD ERROR:", err);
+    console.error(
+      "STAFF DASHBOARD ERROR:",
+      err
+    );
 
     return res.status(500).json({
       message:
@@ -770,23 +1015,33 @@ export const getStaffDashboard = async (req, res) => {
   }
 };
 
-
 // ======================================================
 // ADMIN DASHBOARD
 // ======================================================
 
-export const getAdminDashboard = async (req, res) => {
+export const getAdminDashboard = async (
+  req,
+  res
+) => {
   try {
     // ==================================================
     // BASIC COUNTS
     // ==================================================
 
     const [
+      // ------------------------------------------------
+      // PEOPLE
+      // ------------------------------------------------
+
       totalVendors,
       totalStaff,
       totalRiders,
       activeRiders,
       inactiveRiders,
+
+      // ------------------------------------------------
+      // SHIPMENTS
+      // ------------------------------------------------
 
       totalShipments,
       createdShipments,
@@ -797,21 +1052,33 @@ export const getAdminDashboard = async (req, res) => {
       returnedShipments,
       cancelledShipments,
 
+      // ------------------------------------------------
+      // PICKUPS
+      // ------------------------------------------------
+
       totalPickups,
       requestedPickups,
       assignedPickups,
       completedPickups,
       cancelledPickups,
 
+      // ------------------------------------------------
+      // SYSTEM
+      // ------------------------------------------------
+
       totalLocations,
       totalDeliveryTypes,
       totalWarehouses,
       totalCarriers,
 
+      // ------------------------------------------------
+      // RECENT SHIPMENTS
+      // ------------------------------------------------
+
       recentShipments,
     ] = await Promise.all([
       // ==================================================
-      // USERS / STAFF
+      // PEOPLE
       // ==================================================
 
       prisma.vendor.count(),
@@ -838,11 +1105,19 @@ export const getAdminDashboard = async (req, res) => {
 
       prisma.shipment.count(),
 
+      // ------------------------------------------------
+      // CREATED
+      // ------------------------------------------------
+
       prisma.shipment.count({
         where: {
           status: "CREATED",
         },
       }),
+
+      // ------------------------------------------------
+      // IN WAREHOUSE
+      // ------------------------------------------------
 
       prisma.shipment.count({
         where: {
@@ -850,11 +1125,19 @@ export const getAdminDashboard = async (req, res) => {
         },
       }),
 
+      // ------------------------------------------------
+      // ASSIGNED TO RIDER
+      // ------------------------------------------------
+
       prisma.shipment.count({
         where: {
           status: "ASSIGNED_TO_RIDER",
         },
       }),
+
+      // ------------------------------------------------
+      // OUT FOR DELIVERY
+      // ------------------------------------------------
 
       prisma.shipment.count({
         where: {
@@ -862,17 +1145,30 @@ export const getAdminDashboard = async (req, res) => {
         },
       }),
 
+      // ------------------------------------------------
+      // DELIVERED
+      // ------------------------------------------------
+
       prisma.shipment.count({
         where: {
           status: "DELIVERED",
         },
       }),
 
-      prisma.shipment.count({
+      // ------------------------------------------------
+      // RETURNED TO VENDOR
+      // ------------------------------------------------
+
+      prisma.returnRequest.count({
         where: {
-          status: "RETURNED",
+          status:
+            "RETURNED_TO_VENDOR",
         },
       }),
+
+      // ------------------------------------------------
+      // CANCELLED
+      // ------------------------------------------------
 
       prisma.shipment.count({
         where: {
@@ -884,26 +1180,31 @@ export const getAdminDashboard = async (req, res) => {
       // PICKUPS
       // ==================================================
 
+      // TOTAL
       prisma.pickup.count(),
 
+      // REQUESTED
       prisma.pickup.count({
         where: {
           status: "REQUESTED",
         },
       }),
 
+      // ASSIGNED
       prisma.pickup.count({
         where: {
           status: "ASSIGNED",
         },
       }),
 
+      // COMPLETED
       prisma.pickup.count({
         where: {
           status: "PICKUP_DONE",
         },
       }),
 
+      // CANCELLED
       prisma.pickup.count({
         where: {
           status: "CANCELLED",
@@ -911,7 +1212,7 @@ export const getAdminDashboard = async (req, res) => {
       }),
 
       // ==================================================
-      // SYSTEM DATA
+      // SYSTEM
       // ==================================================
 
       prisma.location.count(),
@@ -923,7 +1224,7 @@ export const getAdminDashboard = async (req, res) => {
       prisma.carrier.count(),
 
       // ==================================================
-      // TOP 3 RECENT SHIPMENTS
+      // RECENT SHIPMENTS
       // ==================================================
 
       prisma.shipment.findMany({
@@ -934,42 +1235,151 @@ export const getAdminDashboard = async (req, res) => {
         take: 3,
 
         select: {
+          // ------------------------------------------------
+          // SHIPMENT
+          // ------------------------------------------------
+
           id: true,
+
           trackingNumber: true,
 
           receiverName: true,
+
           receiverPhone: true,
+
           receiverAddress: true,
 
           packageType: true,
+
           weight: true,
 
           paymentType: true,
+
           codAmount: true,
+
           shippingCharge: true,
 
           status: true,
 
+          origin: true,
+
+          deliveryZone: true,
+
           createdAt: true,
+
+          updatedAt: true,
+
+          // ------------------------------------------------
+          // VENDOR
+          // ------------------------------------------------
 
           vendor: {
             select: {
               id: true,
+
               companyName: true,
             },
           },
 
+          // ------------------------------------------------
+          // RIDER
+          // ------------------------------------------------
+
           rider: {
             select: {
               id: true,
+
               phone: true,
 
               user: {
                 select: {
                   id: true,
+
                   name: true,
                 },
               },
+            },
+          },
+
+          // ------------------------------------------------
+          // RETURN REQUEST
+          // ------------------------------------------------
+          //
+          // IMPORTANT:
+          // NO returnTrackingNumber.
+          //
+          // The shipment's original trackingNumber
+          // remains the tracking number for the return.
+          //
+          // ------------------------------------------------
+
+          returnRequest: {
+            select: {
+              id: true,
+
+              shipmentId: true,
+
+              status: true,
+
+              reason: true,
+
+              description: true,
+
+              returnCharge: true,
+
+              requestedAt: true,
+
+              pickedUpAt: true,
+
+              completedAt: true,
+
+              notes: true,
+
+              riderId: true,
+
+              rider: {
+                select: {
+                  id: true,
+
+                  phone: true,
+
+                  user: {
+                    select: {
+                      id: true,
+
+                      name: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+
+          // ------------------------------------------------
+          // WAREHOUSE
+          // ------------------------------------------------
+
+          warehouse: {
+            select: {
+              id: true,
+
+              name: true,
+
+              city: true,
+            },
+          },
+
+          // ------------------------------------------------
+          // CARRIER
+          // ------------------------------------------------
+
+          carrier: {
+            select: {
+              id: true,
+
+              name: true,
+
+              phone: true,
             },
           },
         },
@@ -984,19 +1394,20 @@ export const getAdminDashboard = async (req, res) => {
     // TOTAL COD
     // --------------------------------------------------
 
-    const totalCODResult = await prisma.shipment.aggregate({
-      _sum: {
-        codAmount: true,
-      },
-
-      where: {
-        paymentType: "COD",
-
-        status: {
-          not: "CANCELLED",
+    const totalCODResult =
+      await prisma.shipment.aggregate({
+        _sum: {
+          codAmount: true,
         },
-      },
-    });
+
+        where: {
+          paymentType: "COD",
+
+          status: {
+            not: "CANCELLED",
+          },
+        },
+      });
 
     const totalCOD =
       totalCODResult._sum.codAmount ?? 0;
@@ -1026,7 +1437,8 @@ export const getAdminDashboard = async (req, res) => {
     // --------------------------------------------------
 
     const codPending = Math.max(
-      Number(totalCOD) - Number(codCollected),
+      Number(totalCOD) -
+        Number(codCollected),
       0
     );
 
@@ -1048,10 +1460,11 @@ export const getAdminDashboard = async (req, res) => {
       });
 
     const totalShippingCharges =
-      shippingChargesResult._sum.shippingCharge ?? 0;
+      shippingChargesResult._sum
+        .shippingCharge ?? 0;
 
     // --------------------------------------------------
-    // COLLECTED / EARNED SHIPPING CHARGES
+    // SHIPPING CHARGES COLLECTED
     // --------------------------------------------------
 
     const shippingChargesCollectedResult =
@@ -1066,18 +1479,22 @@ export const getAdminDashboard = async (req, res) => {
       });
 
     const shippingChargesCollected =
-      shippingChargesCollectedResult._sum
+      shippingChargesCollectedResult
+        ._sum
         .shippingCharge ?? 0;
 
     // --------------------------------------------------
     // PENDING SHIPPING CHARGES
     // --------------------------------------------------
 
-    const shippingChargesPending = Math.max(
-      Number(totalShippingCharges) -
-        Number(shippingChargesCollected),
-      0
-    );
+    const shippingChargesPending =
+      Math.max(
+        Number(totalShippingCharges) -
+          Number(
+            shippingChargesCollected
+          ),
+        0
+      );
 
     // --------------------------------------------------
     // AVERAGE SHIPPING CHARGE
@@ -1106,19 +1523,24 @@ export const getAdminDashboard = async (req, res) => {
 
     return res.json({
       // ==================================================
-      // PEOPLE / ACCOUNTS
+      // USERS
       // ==================================================
 
       users: {
-        vendors: totalVendors,
+        vendors:
+          totalVendors,
 
-        staff: totalStaff,
+        staff:
+          totalStaff,
 
-        riders: totalRiders,
+        riders:
+          totalRiders,
 
-        activeRiders,
+        activeRiders:
+          activeRiders,
 
-        inactiveRiders,
+        inactiveRiders:
+          inactiveRiders,
       },
 
       // ==================================================
@@ -1126,21 +1548,29 @@ export const getAdminDashboard = async (req, res) => {
       // ==================================================
 
       shipments: {
-        total: totalShipments,
+        total:
+          totalShipments,
 
-        created: createdShipments,
+        created:
+          createdShipments,
 
-        inWarehouse: inWarehouseShipments,
+        inWarehouse:
+          inWarehouseShipments,
 
-        assignedToRider: assignedToRiderShipments,
+        assignedToRider:
+          assignedToRiderShipments,
 
-        outForDelivery: outForDeliveryShipments,
+        outForDelivery:
+          outForDeliveryShipments,
 
-        delivered: deliveredShipments,
+        delivered:
+          deliveredShipments,
 
-        returned: returnedShipments,
+        returned:
+          returnedShipments,
 
-        cancelled: cancelledShipments,
+        cancelled:
+          cancelledShipments,
       },
 
       // ==================================================
@@ -1148,15 +1578,20 @@ export const getAdminDashboard = async (req, res) => {
       // ==================================================
 
       pickups: {
-        total: totalPickups,
+        total:
+          totalPickups,
 
-        requested: requestedPickups,
+        requested:
+          requestedPickups,
 
-        assigned: assignedPickups,
+        assigned:
+          assignedPickups,
 
-        completed: completedPickups,
+        completed:
+          completedPickups,
 
-        cancelled: cancelledPickups,
+        cancelled:
+          cancelledPickups,
       },
 
       // ==================================================
@@ -1164,32 +1599,44 @@ export const getAdminDashboard = async (req, res) => {
       // ==================================================
 
       finance: {
-        totalCOD: Number(totalCOD),
+        totalCOD:
+          Number(totalCOD),
 
-        codCollected: Number(codCollected),
+        codCollected:
+          Number(codCollected),
 
-        codPending: Number(codPending),
+        codPending:
+          Number(codPending),
 
         totalShippingCharges:
-          Number(totalShippingCharges),
+          Number(
+            totalShippingCharges
+          ),
 
         shippingChargesCollected:
-          Number(shippingChargesCollected),
+          Number(
+            shippingChargesCollected
+          ),
 
         shippingChargesPending:
-          Number(shippingChargesPending),
+          Number(
+            shippingChargesPending
+          ),
 
         averageShippingCharge:
           Number(
-            Number(averageShippingCharge).toFixed(2)
+            Number(
+              averageShippingCharge
+            ).toFixed(2)
           ),
 
-        // Current schema has no separate cost field.
-        totalShippingCost: null,
+        totalShippingCost:
+          null,
 
-        // Current system revenue based on shipping charges.
         totalRevenue:
-          Number(totalShippingCharges),
+          Number(
+            totalShippingCharges
+          ),
       },
 
       // ==================================================
@@ -1197,17 +1644,21 @@ export const getAdminDashboard = async (req, res) => {
       // ==================================================
 
       system: {
-        locations: totalLocations,
+        locations:
+          totalLocations,
 
-        deliveryTypes: totalDeliveryTypes,
+        deliveryTypes:
+          totalDeliveryTypes,
 
-        warehouses: totalWarehouses,
+        warehouses:
+          totalWarehouses,
 
-        carriers: totalCarriers,
+        carriers:
+          totalCarriers,
       },
 
       // ==================================================
-      // TOP 3 RECENT SHIPMENTS
+      // RECENT SHIPMENTS
       // ==================================================
 
       recentShipments,
@@ -1226,4 +1677,3 @@ export const getAdminDashboard = async (req, res) => {
     });
   }
 };
-
