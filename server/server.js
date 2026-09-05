@@ -25,7 +25,8 @@ app.use(
   cors({
     origin: [
       "http://localhost:3000",
-      "https://rocket-shipping-nepal.vercel.app",
+      "https://rocket-shipping-nepal.vercel.app"
+      ,"https://www.rocketshippings.com/"
     ],
     credentials: true,
   })

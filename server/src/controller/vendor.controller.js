@@ -1673,7 +1673,7 @@ export const getAdminDashboard = async (
       message:
         err instanceof Error
           ? err.message
-          : "Failed to load admin dashboard",
+          : "Failed to load admin dashboards",
     });
   }
 };
