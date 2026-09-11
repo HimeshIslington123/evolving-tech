@@ -9,6 +9,7 @@ import {
   getMyRiderReturns,
   updateReturnStatus,
   cancelReturn,
+  selectReturnDeliveryOption,
 } from "../controller/returnController.js";
 
 // IMPORTANT:
@@ -28,7 +29,11 @@ router.post(
   authenticate,
   createReturnRequest
 );
-
+router.patch(
+  "/:id/delivery-option",
+  authenticate,
+  selectReturnDeliveryOption
+);
 // Get vendor returns
 router.get(
   "/my",
@@ -50,7 +55,7 @@ router.patch(
 // Get all returns
 router.get(
   "/all",
-  authenticate,
+  
   getAllReturns
 );
 

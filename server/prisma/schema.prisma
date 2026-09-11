@@ -385,6 +385,11 @@ model Shipment {
 //
 // ======================================================
 
+enum ReturnDeliveryOption {
+  VENDOR_PICKUP
+  DELIVER_TO_VENDOR
+}
+
 model ReturnRequest {
   id String @id @default(cuid())
 
@@ -394,20 +399,19 @@ model ReturnRequest {
   status ReturnStatus @default(REQUESTED)
 
   reason ReturnReason
-
   description String?
 
   riderId Int?
   rider   Rider? @relation(fields: [riderId], references: [id])
 
+  // ADD THIS
+  deliveryOption ReturnDeliveryOption?
+
   returnCharge Float @default(0)
 
   requestedAt DateTime @default(now())
-
   pickedUpAt DateTime?
-
   completedAt DateTime?
-
   notes String?
 
   createdAt DateTime @default(now())
@@ -415,6 +419,7 @@ model ReturnRequest {
 
   @@index([status])
   @@index([riderId])
+  @@index([deliveryOption])
 }
 
 // ======================================================

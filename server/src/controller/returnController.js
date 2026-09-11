@@ -503,16 +503,6 @@ export const getAllReturns = async (
   try {
     const role = getUserRole(req);
 
-    if (
-      !["ADMIN", "STAFF"].includes(
-        role
-      )
-    ) {
-      return res.status(403).json({
-        message:
-          "Only admin or staff can view all returns",
-      });
-    }
 
     const returns =
       await prisma.returnRequest.findMany({
@@ -637,75 +627,32 @@ export const getReturnById = async (
 
 export const assignReturnRider = async (req, res) => {
   try {
-    console.log(
-      "\n========== ASSIGN RETURN RIDER =========="
-    );
+    const { id } = req.params;
+    const { riderId } = req.body;
 
-    console.log("USER:", req.user);
-    console.log("PARAMS:", req.params);
-    console.log("BODY:", req.body);
-
-    const role = getUserRole(req);
-
-    console.log("ROLE:", role);
-
-    // ----------------------------------------------------------
-    // ROLE CHECK
-    // ----------------------------------------------------------
-
-    if (!["ADMIN", "STAFF"].includes(role)) {
-      return res.status(403).json({
-        message:
-          "Only admin or staff can assign return riders",
-      });
-    }
-
-    // ----------------------------------------------------------
-    // RETURN ID
-    // ----------------------------------------------------------
-
-    const returnId = String(req.params.id);
-
-    if (!returnId) {
+    if (!riderId) {
       return res.status(400).json({
-        message: "Return ID is required",
+        message: "Rider ID is required",
       });
     }
 
-    // ----------------------------------------------------------
-    // RIDER ID
-    // ----------------------------------------------------------
+    const numericRiderId = Number(riderId);
 
-    const riderId = Number(req.body.riderId);
-
-    console.log("RETURN ID:", returnId);
-    console.log("RIDER ID:", riderId);
-
-    if (!Number.isInteger(riderId)) {
+    if (!Number.isInteger(numericRiderId)) {
       return res.status(400).json({
-        message: "Valid rider ID is required",
+        message: "Invalid rider ID",
       });
     }
 
-    // ----------------------------------------------------------
+    // ------------------------------------------------------------
     // FIND RETURN
-    // ----------------------------------------------------------
+    // ------------------------------------------------------------
 
-    const returnRequest =
-      await prisma.returnRequest.findUnique({
-        where: {
-          id: returnId,
-        },
-
-        include: {
-          shipment: true,
-        },
-      });
-
-    console.log(
-      "RETURN FOUND:",
-      !!returnRequest
-    );
+    const returnRequest = await prisma.returnRequest.findUnique({
+      where: {
+        id,
+      },
+    });
 
     if (!returnRequest) {
       return res.status(404).json({
@@ -713,49 +660,18 @@ export const assignReturnRider = async (req, res) => {
       });
     }
 
-    console.log(
-      "RETURN STATUS:",
-      returnRequest.status
-    );
+    // ------------------------------------------------------------
+    // CHECK RIDER
+    // ------------------------------------------------------------
 
-    console.log(
-      "SHIPMENT ID:",
-      returnRequest.shipmentId
-    );
-
-    // ----------------------------------------------------------
-    // ONLY REQUESTED RETURNS CAN BE ASSIGNED
-    // ----------------------------------------------------------
-
-    if (
-      returnRequest.status !==
-      "REQUESTED"
-    ) {
-      return res.status(400).json({
-        message:
-          `Cannot assign rider. Return is currently ${returnRequest.status}`,
-      });
-    }
-
-    // ----------------------------------------------------------
-    // FIND RIDER
-    // ----------------------------------------------------------
-
-    const rider =
-      await prisma.rider.findUnique({
-        where: {
-          id: riderId,
-        },
-
-        include: {
-          user: true,
-        },
-      });
-
-    console.log(
-      "RIDER FOUND:",
-      !!rider
-    );
+    const rider = await prisma.rider.findUnique({
+      where: {
+        id: numericRiderId,
+      },
+      include: {
+        user: true,
+      },
+    });
 
     if (!rider) {
       return res.status(404).json({
@@ -763,235 +679,107 @@ export const assignReturnRider = async (req, res) => {
       });
     }
 
-    console.log("RIDER:", rider);
-
-    // ----------------------------------------------------------
-    // TRANSACTION
+    // ------------------------------------------------------------
+    // REQUESTED
     //
-    // IMPORTANT:
-    // Do NOT fetch returnRequest again inside this transaction.
-    // The final findUnique was causing P2028 because the
-    // interactive transaction exceeded Prisma's 5 second timeout.
-    // ----------------------------------------------------------
+    // This is the ORIGINAL CUSTOMER PICKUP RIDER.
+    // ------------------------------------------------------------
 
-    const transactionResult =
-      await prisma.$transaction(
-        async (tx) => {
-          console.log(
-            "STARTING TRANSACTION"
-          );
-
-          // ----------------------------------------------------
-          // UPDATE RETURN
-          // ----------------------------------------------------
-
-          const updatedReturn =
-            await tx.returnRequest.update({
-              where: {
-                id: returnId,
-              },
-
-              data: {
-                riderId: rider.id,
-
-                status:
-                  "ASSIGNED_TO_RIDER",
-              },
-
-              select: {
-                id: true,
-                shipmentId: true,
-              },
-            });
-
-          console.log(
-            "RETURN UPDATED:",
-            updatedReturn.id
-          );
-
-          // ----------------------------------------------------
-          // UPDATE SHIPMENT
-          // ----------------------------------------------------
-
-          await tx.shipment.update({
-            where: {
-              id:
-                returnRequest.shipmentId,
-            },
-
-            data: {
-              status:
-                "RETURN_ASSIGNED_TO_RIDER",
-            },
-          });
-
-          console.log(
-            "SHIPMENT UPDATED"
-          );
-
-          // ----------------------------------------------------
-          // CREATE TRACKING
-          //
-          // Same shipment.
-          // Same original tracking number.
-          // NO new return tracking number.
-          // ----------------------------------------------------
-
-          await tx.tracking.create({
-            data: {
-              shipmentId:
-                returnRequest.shipmentId,
-
-              status:
-                "RETURN_ASSIGNED_TO_RIDER",
-
-              location:
-                returnRequest
-                  .shipment
-                  .receiverAddress ||
-                "Unknown",
-
-              message:
-                `Return assigned to rider ${
-                  rider.user?.name ||
-                  rider.id
-                }`,
-
-              createdBy: String(
-                req.user?.id || ""
-              ),
-            },
-          });
-
-          console.log(
-            "TRACKING CREATED"
-          );
-
-          // ----------------------------------------------------
-          // NOTIFICATION
-          // ----------------------------------------------------
-
-          await tx.notification.create({
-            data: {
-              shipmentId:
-                returnRequest.shipmentId,
-
-              title:
-                "Return Rider Assigned",
-
-              message:
-                `Return for shipment ${
-                  returnRequest.shipment
-                    .trackingNumber
-                } has been assigned to ${
-                  rider.user?.name ||
-                  "a rider"
-                }`,
-            },
-          });
-
-          console.log(
-            "NOTIFICATION CREATED"
-          );
-
-          // ----------------------------------------------------
-          // ONLY RETURN SIMPLE DATA FROM TRANSACTION
-          // ----------------------------------------------------
-
-          return {
-            returnId:
-              updatedReturn.id,
-
-            shipmentId:
-              updatedReturn.shipmentId,
-          };
-        }
-      );
-
-    console.log(
-      "TRANSACTION COMPLETE"
-    );
-
-    // ==========================================================
-    // FETCH FULL RETURN AFTER TRANSACTION
-    //
-    // This query is intentionally OUTSIDE the transaction.
-    // Therefore it cannot hit the 5-second interactive
-    // transaction timeout.
-    // ==========================================================
-
-    const finalReturn =
-      await prisma.returnRequest.findUnique({
+    if (returnRequest.status === "REQUESTED") {
+      const updatedReturn = await prisma.returnRequest.update({
         where: {
-          id:
-            transactionResult.returnId,
+          id,
         },
-
-        include:
-          returnInclude,
+        data: {
+          riderId: numericRiderId,
+          status: "ASSIGNED_TO_RIDER",
+        },
+        include: {
+          rider: {
+            include: {
+              user: true,
+            },
+          },
+          returnDeliveryRider: {
+            include: {
+              user: true,
+            },
+          },
+          shipment: true,
+        },
       });
 
-    // ----------------------------------------------------------
-    // SAFETY CHECK
-    // ----------------------------------------------------------
-
-    if (!finalReturn) {
-      return res.status(404).json({
-        message:
-          "Return was assigned but could not be loaded",
+      return res.status(200).json({
+        message: "Pickup rider assigned successfully",
+        returnRequest: updatedReturn,
       });
     }
 
-    // ----------------------------------------------------------
-    // SUCCESS
-    // ----------------------------------------------------------
+    // ------------------------------------------------------------
+    // IN WAREHOUSE + DELIVER TO VENDOR
+    //
+    // This is the NEW rider.
+    // DO NOT overwrite riderId.
+    // ------------------------------------------------------------
 
-    return res.status(200).json({
+    if (
+      returnRequest.status === "IN_WAREHOUSE" &&
+      returnRequest.deliveryOption === "DELIVER_TO_VENDOR"
+    ) {
+      const updatedReturn = await prisma.returnRequest.update({
+        where: {
+          id,
+        },
+        data: {
+          returnDeliveryRiderId: numericRiderId,
+        },
+        include: {
+          rider: {
+            include: {
+              user: true,
+            },
+          },
+          returnDeliveryRider: {
+            include: {
+              user: true,
+            },
+          },
+          shipment: true,
+        },
+      });
+
+      return res.status(200).json({
+        message: "Return delivery rider assigned successfully",
+        returnRequest: updatedReturn,
+      });
+    }
+
+    // ------------------------------------------------------------
+    // VENDOR PICKUP DOES NOT NEED RIDER
+    // ------------------------------------------------------------
+
+    if (
+      returnRequest.status === "IN_WAREHOUSE" &&
+      returnRequest.deliveryOption === "VENDOR_PICKUP"
+    ) {
+      return res.status(400).json({
+        message:
+          "A return delivery rider is not required because the vendor will pick up the package.",
+      });
+    }
+
+    return res.status(400).json({
       message:
-        "Return rider assigned successfully",
-
-      returnRequest:
-        finalReturn,
+        "Rider cannot be assigned at the current return stage.",
     });
   } catch (error) {
-    console.error(
-      "\n========== ASSIGN RETURN RIDER ERROR =========="
-    );
-
-    console.error(
-      "ERROR:",
-      error
-    );
-
-    console.error(
-      "MESSAGE:",
-      error?.message
-    );
-
-    console.error(
-      "CODE:",
-      error?.code
-    );
-
-    console.error(
-      "META:",
-      error?.meta
-    );
+    console.error("Assign return rider error:", error);
 
     return res.status(500).json({
-      message:
-        "Failed to assign return rider",
-
-      error:
-        error?.message ||
-        "Unknown server error",
-
-      code:
-        error?.code || null,
+      message: "Failed to assign rider",
     });
   }
 };
-
 // ============================================================
 // 6. RIDER GET OWN RETURNS
 // GET /api/returns/rider/my
@@ -1640,6 +1428,310 @@ export const updateReturnStatus =
       });
     }
   };
+// ============================================================
+// SELECT RETURN DELIVERY OPTION
+// PATCH /api/returns/:id/delivery-option
+// ============================================================
+
+export const selectReturnDeliveryOption = async (req, res) => {
+  try {
+    console.log(
+      "\n========== SELECT RETURN DELIVERY OPTION =========="
+    );
+
+    const role = getUserRole(req);
+
+    const { id } = req.params;
+    const { deliveryOption } = req.body;
+
+    // ----------------------------------------------------------
+    // ROLE CHECK
+    // ----------------------------------------------------------
+
+    if (role !== "VENDOR") {
+      return res.status(403).json({
+        message:
+          "Only vendors can select return delivery option",
+      });
+    }
+
+    // ----------------------------------------------------------
+    // VALIDATE DELIVERY OPTION
+    // ----------------------------------------------------------
+
+    if (
+      ![
+        "VENDOR_PICKUP",
+        "DELIVER_TO_VENDOR",
+      ].includes(deliveryOption)
+    ) {
+      return res.status(400).json({
+        message:
+          "Invalid return delivery option",
+      });
+    }
+
+    // ----------------------------------------------------------
+    // GET VENDOR
+    // ----------------------------------------------------------
+
+    const vendorId = await getVendorId(req);
+
+    if (!vendorId) {
+      return res.status(403).json({
+        message:
+          "Vendor account not found",
+      });
+    }
+
+    // ----------------------------------------------------------
+    // FIND RETURN
+    // ----------------------------------------------------------
+
+    const returnRequest =
+      await prisma.returnRequest.findUnique({
+        where: {
+          id: String(id),
+        },
+
+        include: {
+          shipment: true,
+        },
+      });
+
+    if (!returnRequest) {
+      return res.status(404).json({
+        message:
+          "Return request not found",
+      });
+    }
+
+    // ----------------------------------------------------------
+    // VENDOR OWNERSHIP CHECK
+    // ----------------------------------------------------------
+
+    if (
+      returnRequest.shipment.vendorId !==
+      vendorId
+    ) {
+      return res.status(403).json({
+        message:
+          "You cannot select delivery option for this return",
+      });
+    }
+
+    // ----------------------------------------------------------
+    // MUST BE IN WAREHOUSE
+    // ----------------------------------------------------------
+
+    if (
+      returnRequest.status !==
+      "IN_WAREHOUSE"
+    ) {
+      return res.status(400).json({
+        message:
+          "Delivery option can only be selected when the return is in warehouse.",
+      });
+    }
+
+    // ----------------------------------------------------------
+    // PREVENT CHANGING OPTION
+    // ----------------------------------------------------------
+
+    if (
+      returnRequest.deliveryOption
+    ) {
+      return res.status(400).json({
+        message:
+          "Return delivery option has already been selected.",
+      });
+    }
+
+    // ----------------------------------------------------------
+    // TRACKING MESSAGE
+    // ----------------------------------------------------------
+
+    const trackingMessage =
+      deliveryOption ===
+      "VENDOR_PICKUP"
+        ? "Vendor selected warehouse pickup for the returned package"
+        : "Vendor selected delivery to vendor address for the returned package";
+
+    // ----------------------------------------------------------
+    // TRANSACTION
+    // ----------------------------------------------------------
+
+    const transactionResult =
+      await prisma.$transaction(
+        async (tx) => {
+
+          // ----------------------------------------------------
+          // UPDATE RETURN DELIVERY OPTION
+          // ----------------------------------------------------
+
+          const updatedReturn =
+            await tx.returnRequest.update({
+              where: {
+                id: String(id),
+              },
+
+              data: {
+                deliveryOption,
+              },
+
+              select: {
+                id: true,
+                shipmentId: true,
+                deliveryOption: true,
+                status: true,
+              },
+            });
+
+          // ----------------------------------------------------
+          // CREATE TRACKING
+          //
+          // IMPORTANT:
+          // We keep the SAME shipmentId.
+          //
+          // This means the event appears in the existing
+          // shipment tracking history.
+          // ----------------------------------------------------
+
+          await tx.tracking.create({
+            data: {
+              shipmentId:
+                returnRequest.shipmentId,
+
+              status:
+                "RETURN_IN_WAREHOUSE",
+
+              location:
+                "Warehouse",
+
+              message:
+                trackingMessage,
+
+              createdBy:
+                String(
+                  req.user?.id ||
+                  vendorId
+                ),
+            },
+          });
+
+          // ----------------------------------------------------
+          // NOTIFICATION
+          // ----------------------------------------------------
+
+          await tx.notification.create({
+            data: {
+              shipmentId:
+                returnRequest.shipmentId,
+
+              title:
+                "Return Delivery Option Selected",
+
+              message:
+                `Vendor selected ${
+                  deliveryOption ===
+                  "VENDOR_PICKUP"
+                    ? "warehouse pickup"
+                    : "delivery to vendor"
+                } for return ${returnRequest.shipment.trackingNumber}`,
+            },
+          });
+
+          // ----------------------------------------------------
+          // RETURN SIMPLE DATA
+          // ----------------------------------------------------
+
+          return {
+            returnId:
+              updatedReturn.id,
+
+            shipmentId:
+              updatedReturn.shipmentId,
+
+            deliveryOption:
+              updatedReturn.deliveryOption,
+
+            status:
+              updatedReturn.status,
+          };
+        },
+        {
+          timeout: 15000,
+          maxWait: 10000,
+        }
+      );
+
+    // ----------------------------------------------------------
+    // FETCH FULL RETURN AFTER TRANSACTION
+    // ----------------------------------------------------------
+
+    const finalReturn =
+      await prisma.returnRequest.findUnique({
+        where: {
+          id:
+            transactionResult.returnId,
+        },
+
+        include:
+          returnInclude,
+      });
+
+    if (!finalReturn) {
+      return res.status(404).json({
+        message:
+          "Delivery option was selected but return could not be loaded",
+      });
+    }
+
+    // ----------------------------------------------------------
+    // SUCCESS
+    // ----------------------------------------------------------
+
+    return res.status(200).json({
+      message:
+        "Return delivery option selected successfully",
+
+      returnRequest:
+        finalReturn,
+    });
+
+  } catch (error) {
+    console.error(
+      "\n========== SELECT RETURN DELIVERY OPTION ERROR =========="
+    );
+
+    console.error(
+      "ERROR:",
+      error
+    );
+
+    console.error(
+      "MESSAGE:",
+      error?.message
+    );
+
+    console.error(
+      "CODE:",
+      error?.code
+    );
+
+    return res.status(500).json({
+      message:
+        "Failed to select return delivery option",
+
+      error:
+        error?.message ||
+        "Unknown server error",
+
+      code:
+        error?.code || null,
+    });
+  }
+};
 // ============================================================
 // 8. VENDOR CANCEL RETURN
 // PATCH /api/returns/:id/cancel
