@@ -55,7 +55,7 @@ router.patch(
 // Get all returns
 router.get(
   "/all",
-  
+  authenticate,
   getAllReturns
 );
 

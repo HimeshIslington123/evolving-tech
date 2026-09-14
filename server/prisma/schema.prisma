@@ -43,8 +43,13 @@ enum ReturnReason {
   OTHER
 }
 
+enum ReturnDeliveryOption {
+  VENDOR_PICKUP
+  DELIVER_TO_VENDOR
+}
+
 // ======================================================
-// PICKUP ENUM
+// PICKUP ENUMS
 // ======================================================
 
 enum PickupStatus {
@@ -136,8 +141,7 @@ model Vendor {
   user   User @relation(fields: [userId], references: [id])
 
   shipments Shipment[]
-
-  pickups Pickup[]
+  pickups   Pickup[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -180,13 +184,20 @@ model Rider {
   userId Int  @unique
   user   User @relation(fields: [userId], references: [id])
 
+  // Normal shipment delivery
   shipments Shipment[]
 
+  // Rider GPS locations
   locations RiderLocation[]
 
+  // Pickup assignments
   pickups Pickup[]
 
-  returnRequests ReturnRequest[]
+  // Return pickup rider
+  returnPickupRequests ReturnRequest[] @relation("ReturnPickupRider")
+
+  // Return delivery rider
+  returnDeliveryRequests ReturnRequest[] @relation("ReturnDeliveryRider")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -323,14 +334,16 @@ model Shipment {
   receiverAddress String
 
   packageType PackageType
-  weight      Float
+
+  weight Float
 
   paymentType PaymentType @default(PREPAID)
   codAmount   Float       @default(0)
 
   shippingCharge Float
 
-  notes  String?
+  notes String?
+
   qrCode String?
 
   origin ShipmentOrigin
@@ -339,28 +352,37 @@ model Shipment {
 
   status ShipmentStatus @default(CREATED)
 
+  // Vendor
   vendorId Int?
   vendor   Vendor? @relation(fields: [vendorId], references: [id])
 
+  // Staff who created shipment
   createdByStaffId Int?
   createdByStaff   Staff? @relation("CreatedByStaff", fields: [createdByStaffId], references: [id])
 
+  // Normal delivery rider
   riderId Int?
   rider   Rider? @relation(fields: [riderId], references: [id])
 
+  // Warehouse
   warehouseId Int?
   warehouse   Warehouse? @relation(fields: [warehouseId], references: [id])
 
+  // Carrier
   carrierId Int?
   carrier   Carrier? @relation(fields: [carrierId], references: [id])
 
+  // Location / delivery rate
   locationRateId Int
   locationRate   LocationRate @relation(fields: [locationRateId], references: [id])
 
+  // Tracking history
   trackings Tracking[]
 
+  // Return request
   returnRequest ReturnRequest?
 
+  // Notifications
   notifications Notification[]
 
   createdAt DateTime @default(now())
@@ -376,61 +398,71 @@ model Shipment {
 // ======================================================
 // RETURN REQUEST
 // ======================================================
-//
-// SAME SHIPMENT
-// SAME TRACKING NUMBER
-// SAME TRACKING TABLE
-//
-// NO returnTrackingNumber
-//
-// ======================================================
-
-enum ReturnDeliveryOption {
-  VENDOR_PICKUP
-  DELIVER_TO_VENDOR
-}
 
 model ReturnRequest {
   id String @id @default(cuid())
 
+  // One return request per shipment
   shipmentId String   @unique
   shipment   Shipment @relation(fields: [shipmentId], references: [id])
 
   status ReturnStatus @default(REQUESTED)
 
-  reason ReturnReason
+  reason      ReturnReason
   description String?
 
-  riderId Int?
-  rider   Rider? @relation(fields: [riderId], references: [id])
+  // ====================================================
+  // ORIGINAL RIDER
+  // Customer -> Warehouse
+  // ====================================================
 
-  // ADD THIS
+  riderId Int?
+  rider   Rider? @relation("ReturnPickupRider", fields: [riderId], references: [id])
+
+  // ====================================================
+  // RETURN DELIVERY RIDER
+  // Warehouse -> Vendor
+  // ====================================================
+
+  returnDeliveryRiderId Int?
+  returnDeliveryRider   Rider? @relation("ReturnDeliveryRider", fields: [returnDeliveryRiderId], references: [id])
+
+  // ====================================================
+  // DELIVERY OPTION
+  // ====================================================
+
   deliveryOption ReturnDeliveryOption?
 
+  // Return charge
   returnCharge Float @default(0)
 
+  // ====================================================
+  // TIMESTAMPS
+  // ====================================================
+
   requestedAt DateTime @default(now())
+
   pickedUpAt DateTime?
+
   completedAt DateTime?
+
   notes String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // ====================================================
+  // INDEXES
+  // ====================================================
+
   @@index([status])
   @@index([riderId])
+  @@index([returnDeliveryRiderId])
   @@index([deliveryOption])
 }
 
 // ======================================================
 // TRACKING
-// ======================================================
-//
-// ORIGINAL + RETURN TRACKING
-//
-// SAME shipmentId
-// SAME Shipment.trackingNumber
-//
 // ======================================================
 
 model Tracking {

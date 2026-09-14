@@ -29,18 +29,49 @@ export const getVendors = async (req, res) => {
 // GET VENDOR DASHBOARD
 // ======================================================
 
+
+
 export const getVendorDashboard = async (req, res) => {
+  const requestStart = Date.now();
+
+  // Unique ID for every request
+  const requestId = `${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2, 7)}`;
+
   try {
+    console.log(
+      `[${requestId}] ===============================`
+    );
+    console.log(
+      `[${requestId}] VENDOR DASHBOARD START`
+    );
+
     const userId = Number(req.user.id);
 
-    // ==================================================
-    // FIND VENDOR
-    // ==================================================
+    // =========================================================
+    // 1. DATABASE PING
+    // =========================================================
+
+    let start = Date.now();
+
+    await prisma.$queryRaw`SELECT 1`;
+
+    console.log(
+      `[${requestId}] DB PING: ${Date.now() - start}ms`
+    );
+
+    // =========================================================
+    // 2. FIND VENDOR
+    // =========================================================
+
+    start = Date.now();
 
     const vendor = await prisma.vendor.findUnique({
       where: {
         userId,
       },
+
       select: {
         id: true,
         companyName: true,
@@ -49,321 +80,351 @@ export const getVendorDashboard = async (req, res) => {
       },
     });
 
+    console.log(
+      `[${requestId}] VENDOR QUERY: ${Date.now() - start}ms`
+    );
+
     if (!vendor) {
       return res.status(404).json({
+        success: false,
         message: "Vendor not found",
       });
     }
 
     const vendorId = vendor.id;
 
-    // ==================================================
-    // SHIPMENT COUNTS
-    // ==================================================
+    // =========================================================
+    // 3. DASHBOARD STATISTICS
+    // =========================================================
+
+    const statsStart = Date.now();
+
+    console.log(
+      `[${requestId}] DASHBOARD STATS START`
+    );
 
     const [
-      totalOrders,
-      createdOrders,
-      warehouseOrders,
-      assignedToRiderOrders,
-      outForDeliveryOrders,
-      deliveredOrders,
+      shipmentStatusCounts,
       returnedOrders,
-      cancelledOrders,
+      financialTotals,
+      deliveredFinancials,
+      pickupStatusCounts,
+      codTotals,
     ] = await Promise.all([
-      // ------------------------------------------------
-      // TOTAL SHIPMENTS
-      // ------------------------------------------------
+      // =======================================================
+      // SHIPMENT STATUS COUNTS
+      // =======================================================
 
-      prisma.shipment.count({
-        where: {
-          vendorId,
-        },
-      }),
+      (async () => {
+        const queryStart = Date.now();
 
-      // ------------------------------------------------
-      // CREATED
-      // ------------------------------------------------
+        const result =
+          await prisma.shipment.groupBy({
+            by: ["status"],
 
-      prisma.shipment.count({
-        where: {
-          vendorId,
-          status: "CREATED",
-        },
-      }),
+            where: {
+              vendorId,
+            },
 
-      // ------------------------------------------------
-      // IN WAREHOUSE
-      // ------------------------------------------------
+            _count: {
+              _all: true,
+            },
+          });
 
-      prisma.shipment.count({
-        where: {
-          vendorId,
-          status: "IN_WAREHOUSE",
-        },
-      }),
+        console.log(
+          `[${requestId}] shipment.groupBy: ${
+            Date.now() - queryStart
+          }ms`
+        );
 
-      // ------------------------------------------------
-      // ASSIGNED TO RIDER
-      // ------------------------------------------------
+        return result;
+      })(),
 
-      prisma.shipment.count({
-        where: {
-          vendorId,
-          status: "ASSIGNED_TO_RIDER",
-        },
-      }),
+      // =======================================================
+      // RETURN COUNT
+      // =======================================================
 
-      // ------------------------------------------------
-      // OUT FOR DELIVERY
-      // ------------------------------------------------
+      (async () => {
+        const queryStart = Date.now();
 
-      prisma.shipment.count({
-        where: {
-          vendorId,
-          status: "OUT_FOR_DELIVERY",
-        },
-      }),
+        const result =
+          await prisma.returnRequest.count({
+            where: {
+              shipment: {
+                vendorId,
+              },
 
-      // ------------------------------------------------
-      // DELIVERED
-      // ------------------------------------------------
+              status:
+                "RETURNED_TO_VENDOR",
+            },
+          });
 
-      prisma.shipment.count({
-        where: {
-          vendorId,
-          status: "DELIVERED",
-        },
-      }),
+        console.log(
+          `[${requestId}] returnRequest.count: ${
+            Date.now() - queryStart
+          }ms`
+        );
 
-      // ------------------------------------------------
-      // RETURNED TO VENDOR
-      // ------------------------------------------------
-      //
-      // ReturnRequest has its own status.
-      // ------------------------------------------------
+        return result;
+      })(),
 
-      prisma.returnRequest.count({
-        where: {
-          shipment: {
-            vendorId,
-          },
-          status: "RETURNED_TO_VENDOR",
-        },
-      }),
+      // =======================================================
+      // SHIPPING FINANCIALS
+      // =======================================================
 
-      // ------------------------------------------------
-      // CANCELLED
-      // ------------------------------------------------
+      (async () => {
+        const queryStart = Date.now();
 
-      prisma.shipment.count({
-        where: {
-          vendorId,
-          status: "CANCELLED",
-        },
-      }),
+        const result =
+          await prisma.shipment.aggregate({
+            where: {
+              vendorId,
+
+              status: {
+                not: "CANCELLED",
+              },
+            },
+
+            _sum: {
+              shippingCharge: true,
+            },
+
+            _avg: {
+              shippingCharge: true,
+            },
+          });
+
+        console.log(
+          `[${requestId}] shipping.aggregate: ${
+            Date.now() - queryStart
+          }ms`
+        );
+
+        return result;
+      })(),
+
+      // =======================================================
+      // DELIVERED FINANCIALS
+      // =======================================================
+
+      (async () => {
+        const queryStart = Date.now();
+
+        const result =
+          await prisma.shipment.aggregate({
+            where: {
+              vendorId,
+
+              status: "DELIVERED",
+            },
+
+            _sum: {
+              codAmount: true,
+              shippingCharge: true,
+            },
+          });
+
+        console.log(
+          `[${requestId}] delivered.aggregate: ${
+            Date.now() - queryStart
+          }ms`
+        );
+
+        return result;
+      })(),
+
+      // =======================================================
+      // PICKUP STATUS
+      // =======================================================
+
+      (async () => {
+        const queryStart = Date.now();
+
+        const result =
+          await prisma.pickup.groupBy({
+            by: ["status"],
+
+            where: {
+              vendorId,
+            },
+
+            _count: {
+              _all: true,
+            },
+          });
+
+        console.log(
+          `[${requestId}] pickup.groupBy: ${
+            Date.now() - queryStart
+          }ms`
+        );
+
+        return result;
+      })(),
+
+      // =======================================================
+      // TOTAL COD
+      // =======================================================
+
+      (async () => {
+        const queryStart = Date.now();
+
+        const result =
+          await prisma.shipment.aggregate({
+            where: {
+              vendorId,
+
+              paymentType: "COD",
+
+              status: {
+                not: "CANCELLED",
+              },
+            },
+
+            _sum: {
+              codAmount: true,
+            },
+          });
+
+        console.log(
+          `[${requestId}] cod.aggregate: ${
+            Date.now() - queryStart
+          }ms`
+        );
+
+        return result;
+      })(),
     ]);
 
-    // ==================================================
-    // FINANCIAL STATISTICS
-    // ==================================================
+    console.log(
+      `[${requestId}] ALL DASHBOARD STATS: ${
+        Date.now() - statsStart
+      }ms`
+    );
 
-    // --------------------------------------------------
-    // TOTAL COD
-    // --------------------------------------------------
+    // =========================================================
+    // 4. SHIPMENT COUNT HELPER
+    // =========================================================
 
-    const totalCODResult = await prisma.shipment.aggregate({
-      _sum: {
-        codAmount: true,
-      },
+    const shipmentCount = (status) => {
+      const row =
+        shipmentStatusCounts.find(
+          (item) =>
+            item.status === status
+        );
 
-      where: {
-        vendorId,
+      return row?._count?._all || 0;
+    };
 
-        paymentType: "COD",
+    // =========================================================
+    // 5. PICKUP COUNT HELPER
+    // =========================================================
 
-        status: {
-          not: "CANCELLED",
-        },
-      },
-    });
+    const pickupCount = (status) => {
+      const row =
+        pickupStatusCounts.find(
+          (item) =>
+            item.status === status
+        );
+
+      return row?._count?._all || 0;
+    };
+
+    // =========================================================
+    // 6. ORDER COUNTS
+    // =========================================================
+
+    const totalOrders =
+      shipmentStatusCounts.reduce(
+        (total, item) =>
+          total +
+          (item._count?._all || 0),
+        0
+      );
+
+    const createdOrders =
+      shipmentCount("CREATED");
+
+    const warehouseOrders =
+      shipmentCount("IN_WAREHOUSE");
+
+    const assignedToRiderOrders =
+      shipmentCount(
+        "ASSIGNED_TO_RIDER"
+      );
+
+    const outForDeliveryOrders =
+      shipmentCount(
+        "OUT_FOR_DELIVERY"
+      );
+
+    const deliveredOrders =
+      shipmentCount("DELIVERED");
+
+    const cancelledOrders =
+      shipmentCount("CANCELLED");
+
+    // =========================================================
+    // 7. FINANCE
+    // =========================================================
 
     const totalCOD =
-      totalCODResult._sum.codAmount ?? 0;
-
-    // --------------------------------------------------
-    // COD COLLECTED
-    // --------------------------------------------------
-
-    const codCollectedResult =
-      await prisma.shipment.aggregate({
-        _sum: {
-          codAmount: true,
-        },
-
-        where: {
-          vendorId,
-
-          paymentType: "COD",
-
-          status: "DELIVERED",
-        },
-      });
+      codTotals?._sum?.codAmount || 0;
 
     const codCollected =
-      codCollectedResult._sum.codAmount ?? 0;
-
-    // --------------------------------------------------
-    // COD PENDING
-    // --------------------------------------------------
+      deliveredFinancials?._sum
+        ?.codAmount || 0;
 
     const codPending = Math.max(
-      Number(totalCOD) - Number(codCollected),
+      Number(totalCOD) -
+        Number(codCollected),
       0
     );
 
-    // --------------------------------------------------
-    // TOTAL SHIPPING CHARGES
-    // --------------------------------------------------
-
-    const shippingChargesResult =
-      await prisma.shipment.aggregate({
-        _sum: {
-          shippingCharge: true,
-        },
-
-        where: {
-          vendorId,
-
-          status: {
-            not: "CANCELLED",
-          },
-        },
-      });
-
     const totalShippingCharges =
-      shippingChargesResult._sum.shippingCharge ?? 0;
-
-    // --------------------------------------------------
-    // DELIVERED SHIPPING CHARGES
-    // --------------------------------------------------
-
-    const deliveredShippingChargesResult =
-      await prisma.shipment.aggregate({
-        _sum: {
-          shippingCharge: true,
-        },
-
-        where: {
-          vendorId,
-
-          status: "DELIVERED",
-        },
-      });
+      financialTotals?._sum
+        ?.shippingCharge || 0;
 
     const shippingChargesPaid =
-      deliveredShippingChargesResult._sum
-        .shippingCharge ?? 0;
+      deliveredFinancials?._sum
+        ?.shippingCharge || 0;
 
-    // --------------------------------------------------
-    // BILL TO PAY
-    // --------------------------------------------------
+    const averageShippingCharge =
+      financialTotals?._avg
+        ?.shippingCharge || 0;
 
     const billToPay =
       totalShippingCharges;
 
-    // --------------------------------------------------
-    // AVERAGE SHIPPING CHARGE
-    // --------------------------------------------------
+    // =========================================================
+    // 8. PICKUPS
+    // =========================================================
 
-    const averageShippingChargeResult =
-      await prisma.shipment.aggregate({
-        _avg: {
-          shippingCharge: true,
-        },
+    const totalPickups =
+      pickupStatusCounts.reduce(
+        (total, item) =>
+          total +
+          (item._count?._all || 0),
+        0
+      );
 
-        where: {
-          vendorId,
+    const requestedPickups =
+      pickupCount("REQUESTED");
 
-          status: {
-            not: "CANCELLED",
-          },
-        },
-      });
+    const assignedPickups =
+      pickupCount("ASSIGNED");
 
-    const averageShippingCharge =
-      averageShippingChargeResult._avg
-        .shippingCharge ?? 0;
+    const completedPickups =
+      pickupCount("PICKUP_DONE");
 
-    // ==================================================
-    // PICKUP STATISTICS
-    // ==================================================
+    const cancelledPickups =
+      pickupCount("CANCELLED");
 
-    const [
-      totalPickups,
-      requestedPickups,
-      assignedPickups,
-      completedPickups,
-      cancelledPickups,
-    ] = await Promise.all([
-      // ------------------------------------------------
-      // TOTAL
-      // ------------------------------------------------
+    // =========================================================
+    // 9. RECENT SHIPMENTS
+    // =========================================================
 
-      prisma.pickup.count({
-        where: {
-          vendorId,
-        },
-      }),
-
-      // ------------------------------------------------
-      // REQUESTED
-      // ------------------------------------------------
-
-      prisma.pickup.count({
-        where: {
-          vendorId,
-          status: "REQUESTED",
-        },
-      }),
-
-      // ------------------------------------------------
-      // ASSIGNED
-      // ------------------------------------------------
-
-      prisma.pickup.count({
-        where: {
-          vendorId,
-          status: "ASSIGNED",
-        },
-      }),
-
-      // ------------------------------------------------
-      // COMPLETED
-      // ------------------------------------------------
-
-      prisma.pickup.count({
-        where: {
-          vendorId,
-          status: "PICKUP_DONE",
-        },
-      }),
-
-      // ------------------------------------------------
-      // CANCELLED
-      // ------------------------------------------------
-
-      prisma.pickup.count({
-        where: {
-          vendorId,
-          status: "CANCELLED",
-        },
-      }),
-    ]);
-
-    // ==================================================
-    // RECENT SHIPMENTS
-    // ==================================================
+    start = Date.now();
 
     const recentShipments =
       await prisma.shipment.findMany({
@@ -378,224 +439,473 @@ export const getVendorDashboard = async (req, res) => {
         take: 10,
 
         select: {
-          // ------------------------------------------------
-          // BASIC SHIPMENT INFORMATION
-          // ------------------------------------------------
-
           id: true,
-
           trackingNumber: true,
 
           receiverName: true,
-
           receiverPhone: true,
-
           receiverAddress: true,
 
           packageType: true,
-
           weight: true,
 
           paymentType: true,
-
           codAmount: true,
-
           shippingCharge: true,
 
           notes: true,
-
           qrCode: true,
 
           status: true,
 
           origin: true,
-
           deliveryZone: true,
 
           vendorId: true,
-
           riderId: true,
-
           warehouseId: true,
-
           carrierId: true,
-
           locationRateId: true,
 
           createdAt: true,
-
           updatedAt: true,
+        },
+      });
 
-          // ------------------------------------------------
-          // TRACKING HISTORY
-          // ------------------------------------------------
+    console.log(
+      `[${requestId}] RECENT SHIPMENTS BASE: ${
+        Date.now() - start
+      }ms`
+    );
 
-          trackings: {
-            orderBy: {
-              createdAt: "desc",
-            },
+    // =========================================================
+    // 10. NO SHIPMENTS
+    // =========================================================
 
-            select: {
-              id: true,
+    if (recentShipments.length === 0) {
+      console.log(
+        `[${requestId}] TOTAL VENDOR DASHBOARD: ${
+          Date.now() - requestStart
+        }ms`
+      );
 
-              shipmentId: true,
+      return res.json({
+        vendor: {
+          id: vendor.id,
+          companyName:
+            vendor.companyName,
+          contactId:
+            vendor.contactId,
+          location:
+            vendor.location,
+        },
 
-              status: true,
+        orders: {
+          total: totalOrders,
+          pending: createdOrders,
+          received: 0,
+          processing: 0,
+          inWarehouse:
+            warehouseOrders,
+          dispatched: 0,
+          inTransit:
+            assignedToRiderOrders,
+          arrived: 0,
+          outForDelivery:
+            outForDeliveryOrders,
+          delivered:
+            deliveredOrders,
+          cancelled:
+            cancelledOrders,
+          returned:
+            returnedOrders,
+        },
 
-              location: true,
+        finance: {
+          totalCOD:
+            Number(totalCOD),
 
-              message: true,
+          codCollected:
+            Number(codCollected),
 
-              createdBy: true,
+          codPending:
+            Number(codPending),
 
-              createdAt: true,
-            },
+          totalShippingCharges:
+            Number(
+              totalShippingCharges
+            ),
+
+          shippingChargesPaid:
+            Number(
+              shippingChargesPaid
+            ),
+
+          billToPay:
+            Number(billToPay),
+
+          averageShippingCharge:
+            Number(
+              Number(
+                averageShippingCharge
+              ).toFixed(2)
+            ),
+
+          totalShippingCost:
+            null,
+
+          totalRevenue:
+            Number(
+              totalShippingCharges
+            ),
+        },
+
+        pickups: {
+          total: totalPickups,
+          requested:
+            requestedPickups,
+          assigned:
+            assignedPickups,
+          completed:
+            completedPickups,
+          cancelled:
+            cancelledPickups,
+        },
+
+        recentShipments: [],
+      });
+    }
+
+    // =========================================================
+    // 11. GET RELATED IDS
+    // =========================================================
+
+    const shipmentIds =
+      recentShipments.map(
+        (shipment) => shipment.id
+      );
+
+    const riderIds = [
+      ...new Set(
+        recentShipments
+          .map(
+            (shipment) =>
+              shipment.riderId
+          )
+          .filter(Boolean)
+      ),
+    ];
+
+    const warehouseIds = [
+      ...new Set(
+        recentShipments
+          .map(
+            (shipment) =>
+              shipment.warehouseId
+          )
+          .filter(Boolean)
+      ),
+    ];
+
+    const carrierIds = [
+      ...new Set(
+        recentShipments
+          .map(
+            (shipment) =>
+              shipment.carrierId
+          )
+          .filter(Boolean)
+      ),
+    ];
+
+    // =========================================================
+    // 12. RELATED DATA
+    // =========================================================
+
+    start = Date.now();
+
+    const [
+      trackings,
+      returnRequests,
+      riders,
+      warehouses,
+      carriers,
+    ] = await Promise.all([
+      // =======================================================
+      // TRACKINGS
+      // =======================================================
+
+      prisma.tracking.findMany({
+        where: {
+          shipmentId: {
+            in: shipmentIds,
           },
+        },
 
-          // ------------------------------------------------
-          // RETURN REQUEST
-          // ------------------------------------------------
-          //
-          // IMPORTANT:
-          // There is NO returnTrackingNumber.
-          //
-          // Returns continue using:
-          // shipment.trackingNumber
-          //
-          // ------------------------------------------------
+        orderBy: {
+          createdAt: "desc",
+        },
 
-          returnRequest: {
-            select: {
-              id: true,
+        select: {
+          id: true,
+          shipmentId: true,
+          status: true,
+          location: true,
+          message: true,
+          createdBy: true,
+          createdAt: true,
+        },
+      }),
 
-              shipmentId: true,
+      // =======================================================
+      // RETURNS
+      // =======================================================
 
-              status: true,
+      prisma.returnRequest.findMany({
+        where: {
+          shipmentId: {
+            in: shipmentIds,
+          },
+        },
 
-              reason: true,
+        select: {
+          id: true,
+          shipmentId: true,
+          status: true,
+          reason: true,
+          description: true,
+          returnCharge: true,
+          requestedAt: true,
+          pickedUpAt: true,
+          completedAt: true,
+          notes: true,
+          riderId: true,
+        },
+      }),
 
-              description: true,
+      // =======================================================
+      // RIDERS
+      // =======================================================
 
-              returnCharge: true,
-
-              requestedAt: true,
-
-              pickedUpAt: true,
-
-              completedAt: true,
-
-              notes: true,
-
-              riderId: true,
-
-              rider: {
-                select: {
-                  id: true,
-
-                  phone: true,
-
-                  user: {
-                    select: {
-                      id: true,
-
-                      name: true,
-
-                      email: true,
-                    },
-                  },
-                },
+      riderIds.length > 0
+        ? prisma.rider.findMany({
+            where: {
+              id: {
+                in: riderIds,
               },
             },
-          },
 
-          // ------------------------------------------------
-          // RIDER
-          // ------------------------------------------------
-
-          rider: {
             select: {
               id: true,
-
               phone: true,
-
               isAvailable: true,
-
               latitude: true,
-
               longitude: true,
 
               user: {
                 select: {
                   id: true,
-
                   name: true,
-
                   email: true,
                 },
               },
             },
-          },
+          })
+        : Promise.resolve([]),
 
-          // ------------------------------------------------
-          // WAREHOUSE
-          // ------------------------------------------------
+      // =======================================================
+      // WAREHOUSES
+      // =======================================================
 
-          warehouse: {
+      warehouseIds.length > 0
+        ? prisma.warehouse.findMany({
+            where: {
+              id: {
+                in: warehouseIds,
+              },
+            },
+
             select: {
               id: true,
-
               name: true,
-
               city: true,
             },
-          },
+          })
+        : Promise.resolve([]),
 
-          // ------------------------------------------------
-          // CARRIER
-          // ------------------------------------------------
+      // =======================================================
+      // CARRIERS
+      // =======================================================
 
-          carrier: {
+      carrierIds.length > 0
+        ? prisma.carrier.findMany({
+            where: {
+              id: {
+                in: carrierIds,
+              },
+            },
+
             select: {
               id: true,
-
               name: true,
-
               phone: true,
             },
-          },
-        },
-      });
+          })
+        : Promise.resolve([]),
+    ]);
 
-    // ==================================================
-    // RESPONSE
-    // ==================================================
+    console.log(
+      `[${requestId}] RELATED DATA: ${
+        Date.now() - start
+      }ms`
+    );
 
-    return res.json({
-      // ==================================================
-      // VENDOR
-      // ==================================================
+    // =========================================================
+    // 13. CREATE MAPS
+    // =========================================================
 
+    const trackingMap =
+      new Map();
+
+    for (const tracking of trackings) {
+      if (
+        !trackingMap.has(
+          tracking.shipmentId
+        )
+      ) {
+        trackingMap.set(
+          tracking.shipmentId,
+          tracking
+        );
+      }
+    }
+
+    const returnMap =
+      new Map();
+
+    for (const returnRequest of returnRequests) {
+      returnMap.set(
+        returnRequest.shipmentId,
+        returnRequest
+      );
+    }
+
+    const riderMap =
+      new Map();
+
+    for (const rider of riders) {
+      riderMap.set(
+        rider.id,
+        rider
+      );
+    }
+
+    const warehouseMap =
+      new Map();
+
+    for (const warehouse of warehouses) {
+      warehouseMap.set(
+        warehouse.id,
+        warehouse
+      );
+    }
+
+    const carrierMap =
+      new Map();
+
+    for (const carrier of carriers) {
+      carrierMap.set(
+        carrier.id,
+        carrier
+      );
+    }
+
+    // =========================================================
+    // 14. BUILD RECENT SHIPMENTS
+    // =========================================================
+
+    const finalRecentShipments =
+      recentShipments.map(
+        (shipment) => {
+          const returnRequest =
+            returnMap.get(
+              shipment.id
+            );
+
+          const returnRider =
+            returnRequest?.riderId
+              ? riderMap.get(
+                  returnRequest.riderId
+                ) || null
+              : null;
+
+          return {
+            ...shipment,
+
+            trackings:
+              trackingMap.has(
+                shipment.id
+              )
+                ? [
+                    trackingMap.get(
+                      shipment.id
+                    ),
+                  ]
+                : [],
+
+            returnRequest:
+              returnRequest
+                ? {
+                    ...returnRequest,
+                    rider:
+                      returnRider,
+                  }
+                : null,
+
+            rider:
+              shipment.riderId
+                ? riderMap.get(
+                    shipment.riderId
+                  ) || null
+                : null,
+
+            warehouse:
+              shipment.warehouseId
+                ? warehouseMap.get(
+                    shipment.warehouseId
+                  ) || null
+                : null,
+
+            carrier:
+              shipment.carrierId
+                ? carrierMap.get(
+                    shipment.carrierId
+                  ) || null
+                : null,
+          };
+        }
+      );
+
+    // =========================================================
+    // 15. FINAL RESPONSE
+    // =========================================================
+
+    const response = {
       vendor: {
         id: vendor.id,
-
         companyName:
           vendor.companyName,
-
         contactId:
           vendor.contactId,
-
         location:
           vendor.location,
       },
 
-      // ==================================================
-      // ORDERS
-      // ==================================================
-
       orders: {
         total: totalOrders,
 
-        pending: createdOrders,
+        pending:
+          createdOrders,
 
         received: 0,
 
@@ -624,10 +934,6 @@ export const getVendorDashboard = async (req, res) => {
           returnedOrders,
       },
 
-      // ==================================================
-      // FINANCE
-      // ==================================================
-
       finance: {
         totalCOD:
           Number(totalCOD),
@@ -639,10 +945,14 @@ export const getVendorDashboard = async (req, res) => {
           Number(codPending),
 
         totalShippingCharges:
-          Number(totalShippingCharges),
+          Number(
+            totalShippingCharges
+          ),
 
         shippingChargesPaid:
-          Number(shippingChargesPaid),
+          Number(
+            shippingChargesPaid
+          ),
 
         billToPay:
           Number(billToPay),
@@ -658,12 +968,10 @@ export const getVendorDashboard = async (req, res) => {
           null,
 
         totalRevenue:
-          Number(totalShippingCharges),
+          Number(
+            totalShippingCharges
+          ),
       },
-
-      // ==================================================
-      // PICKUPS
-      // ==================================================
 
       pickups: {
         total:
@@ -682,19 +990,38 @@ export const getVendorDashboard = async (req, res) => {
           cancelledPickups,
       },
 
-      // ==================================================
-      // RECENT SHIPMENTS
-      // ==================================================
+      recentShipments:
+        finalRecentShipments,
+    };
 
-      recentShipments,
-    });
+    // =========================================================
+    // 16. TOTAL TIME
+    // =========================================================
+
+    console.log(
+      `[${requestId}] TOTAL VENDOR DASHBOARD: ${
+        Date.now() - requestStart
+      }ms`
+    );
+
+    console.log(
+      `[${requestId}] VENDOR DASHBOARD END`
+    );
+
+    console.log(
+      `[${requestId}] ===============================`
+    );
+
+    return res.json(response);
   } catch (err) {
     console.error(
-      "VENDOR DASHBOARD ERROR:",
+      `[${requestId}] VENDOR DASHBOARD ERROR:`,
       err
     );
 
     return res.status(500).json({
+      success: false,
+
       message:
         err instanceof Error
           ? err.message
@@ -702,202 +1029,88 @@ export const getVendorDashboard = async (req, res) => {
     });
   }
 };
-
 // ======================================================
 // STAFF DASHBOARD
 // ======================================================
-
-export const getStaffDashboard = async (
-  req,
-  res
-) => {
+export const getStaffDashboard = async (req, res) => {
   try {
-    // ==================================================
-    // SHIPMENT COUNTS
-    // ==================================================
-
     const [
       totalShipments,
-      created,
-      inWarehouse,
-      assignedToRider,
-      outForDelivery,
-      delivered,
+      shipmentStatusCounts,
       returned,
-      cancelled,
       requestedPickups,
       recentShipments,
     ] = await Promise.all([
-      // ------------------------------------------------
       // TOTAL
-      // ------------------------------------------------
-
       prisma.shipment.count(),
 
-      // ------------------------------------------------
-      // CREATED
-      // ------------------------------------------------
-
-      prisma.shipment.count({
-        where: {
-          status: "CREATED",
+      // ALL STATUS COUNTS IN ONE QUERY
+      prisma.shipment.groupBy({
+        by: ["status"],
+        _count: {
+          _all: true,
         },
       }),
 
-      // ------------------------------------------------
-      // IN WAREHOUSE
-      // ------------------------------------------------
-
-      prisma.shipment.count({
-        where: {
-          status: "IN_WAREHOUSE",
-        },
-      }),
-
-      // ------------------------------------------------
-      // ASSIGNED
-      // ------------------------------------------------
-
-      prisma.shipment.count({
-        where: {
-          status: "ASSIGNED_TO_RIDER",
-        },
-      }),
-
-      // ------------------------------------------------
-      // OUT FOR DELIVERY
-      // ------------------------------------------------
-
-      prisma.shipment.count({
-        where: {
-          status: "OUT_FOR_DELIVERY",
-        },
-      }),
-
-      // ------------------------------------------------
-      // DELIVERED
-      // ------------------------------------------------
-
-      prisma.shipment.count({
-        where: {
-          status: "DELIVERED",
-        },
-      }),
-
-      // ------------------------------------------------
       // RETURNED
-      // ------------------------------------------------
-
       prisma.returnRequest.count({
         where: {
           status: "RETURNED_TO_VENDOR",
         },
       }),
 
-      // ------------------------------------------------
-      // CANCELLED
-      // ------------------------------------------------
-
-      prisma.shipment.count({
-        where: {
-          status: "CANCELLED",
-        },
-      }),
-
-      // ------------------------------------------------
-      // REQUESTED PICKUPS
-      // ------------------------------------------------
-
+      // PICKUPS
       prisma.pickup.count({
         where: {
           status: "REQUESTED",
         },
       }),
 
-      // ------------------------------------------------
       // RECENT SHIPMENTS
-      // ------------------------------------------------
-
       prisma.shipment.findMany({
         orderBy: {
           createdAt: "desc",
         },
-
         take: 3,
-
         select: {
-          // ------------------------------------------------
-          // SHIPMENT
-          // ------------------------------------------------
-
           id: true,
-
           trackingNumber: true,
-
           receiverName: true,
-
           receiverPhone: true,
-
           receiverAddress: true,
-
           packageType: true,
-
           weight: true,
-
           paymentType: true,
-
           codAmount: true,
-
           shippingCharge: true,
-
           status: true,
-
           origin: true,
-
           deliveryZone: true,
-
           createdAt: true,
-
           updatedAt: true,
-
-          // ------------------------------------------------
-          // RETURN
-          // ------------------------------------------------
 
           returnRequest: {
             select: {
               id: true,
-
               shipmentId: true,
-
               status: true,
-
               reason: true,
-
               description: true,
-
               returnCharge: true,
-
               requestedAt: true,
-
               pickedUpAt: true,
-
               completedAt: true,
-
               notes: true,
-
               riderId: true,
 
               rider: {
                 select: {
                   id: true,
-
                   phone: true,
 
                   user: {
                     select: {
                       id: true,
-
                       name: true,
                     },
                   },
@@ -906,62 +1119,39 @@ export const getStaffDashboard = async (
             },
           },
 
-          // ------------------------------------------------
-          // VENDOR
-          // ------------------------------------------------
-
           vendor: {
             select: {
               id: true,
-
               companyName: true,
             },
           },
 
-          // ------------------------------------------------
-          // RIDER
-          // ------------------------------------------------
-
           rider: {
             select: {
               id: true,
-
               phone: true,
 
               user: {
                 select: {
                   id: true,
-
                   name: true,
                 },
               },
             },
           },
 
-          // ------------------------------------------------
-          // WAREHOUSE
-          // ------------------------------------------------
-
           warehouse: {
             select: {
               id: true,
-
               name: true,
-
               city: true,
             },
           },
 
-          // ------------------------------------------------
-          // CARRIER
-          // ------------------------------------------------
-
           carrier: {
             select: {
               id: true,
-
               name: true,
-
               phone: true,
             },
           },
@@ -970,32 +1160,48 @@ export const getStaffDashboard = async (
     ]);
 
     // ==================================================
+    // CONVERT STATUS COUNTS
+    // ==================================================
+
+    const statusCounts = Object.fromEntries(
+      shipmentStatusCounts.map((item) => [
+        item.status,
+        item._count._all,
+      ])
+    );
+
+    // ==================================================
     // RESPONSE
     // ==================================================
 
     return res.json({
       shipments: {
-        total:
-          totalShipments,
+        total: totalShipments,
 
-        created,
+        created:
+          statusCounts.CREATED || 0,
 
-        inWarehouse,
+        inWarehouse:
+          statusCounts.IN_WAREHOUSE || 0,
 
-        assignedToRider,
+        assignedToRider:
+          statusCounts.ASSIGNED_TO_RIDER || 0,
 
-        outForDelivery,
+        outForDelivery:
+          statusCounts.OUT_FOR_DELIVERY || 0,
 
-        delivered,
+        delivered:
+          statusCounts.DELIVERED || 0,
 
-        returned,
+        returned:
+          returned,
 
-        cancelled,
+        cancelled:
+          statusCounts.CANCELLED || 0,
       },
 
       pickups: {
-        requested:
-          requestedPickups,
+        requested: requestedPickups,
       },
 
       recentShipments,
@@ -1014,24 +1220,20 @@ export const getStaffDashboard = async (
     });
   }
 };
-
 // ======================================================
 // ADMIN DASHBOARD
 // ======================================================
 
-export const getAdminDashboard = async (
-  req,
-  res
-) => {
+export const getAdminDashboard = async (req, res) => {
   try {
-    // ==================================================
-    // BASIC COUNTS
-    // ==================================================
+    // ============================================================
+    // ALL DASHBOARD QUERIES RUN IN PARALLEL
+    // ============================================================
 
     const [
-      // ------------------------------------------------
+      // ==========================================================
       // PEOPLE
-      // ------------------------------------------------
+      // ==========================================================
 
       totalVendors,
       totalStaff,
@@ -1039,9 +1241,9 @@ export const getAdminDashboard = async (
       activeRiders,
       inactiveRiders,
 
-      // ------------------------------------------------
+      // ==========================================================
       // SHIPMENTS
-      // ------------------------------------------------
+      // ==========================================================
 
       totalShipments,
       createdShipments,
@@ -1052,9 +1254,9 @@ export const getAdminDashboard = async (
       returnedShipments,
       cancelledShipments,
 
-      // ------------------------------------------------
+      // ==========================================================
       // PICKUPS
-      // ------------------------------------------------
+      // ==========================================================
 
       totalPickups,
       requestedPickups,
@@ -1062,24 +1264,34 @@ export const getAdminDashboard = async (
       completedPickups,
       cancelledPickups,
 
-      // ------------------------------------------------
+      // ==========================================================
       // SYSTEM
-      // ------------------------------------------------
+      // ==========================================================
 
       totalLocations,
       totalDeliveryTypes,
       totalWarehouses,
       totalCarriers,
 
-      // ------------------------------------------------
+      // ==========================================================
       // RECENT SHIPMENTS
-      // ------------------------------------------------
+      // ==========================================================
 
       recentShipments,
+
+      // ==========================================================
+      // FINANCE
+      // ==========================================================
+
+      totalCODResult,
+      codCollectedResult,
+      shippingChargesResult,
+      shippingChargesCollectedResult,
+      averageShippingChargeResult,
     ] = await Promise.all([
-      // ==================================================
+      // ==========================================================
       // PEOPLE
-      // ==================================================
+      // ==========================================================
 
       prisma.vendor.count(),
 
@@ -1099,15 +1311,11 @@ export const getAdminDashboard = async (
         },
       }),
 
-      // ==================================================
+      // ==========================================================
       // SHIPMENTS
-      // ==================================================
+      // ==========================================================
 
       prisma.shipment.count(),
-
-      // ------------------------------------------------
-      // CREATED
-      // ------------------------------------------------
 
       prisma.shipment.count({
         where: {
@@ -1115,19 +1323,11 @@ export const getAdminDashboard = async (
         },
       }),
 
-      // ------------------------------------------------
-      // IN WAREHOUSE
-      // ------------------------------------------------
-
       prisma.shipment.count({
         where: {
           status: "IN_WAREHOUSE",
         },
       }),
-
-      // ------------------------------------------------
-      // ASSIGNED TO RIDER
-      // ------------------------------------------------
 
       prisma.shipment.count({
         where: {
@@ -1135,19 +1335,11 @@ export const getAdminDashboard = async (
         },
       }),
 
-      // ------------------------------------------------
-      // OUT FOR DELIVERY
-      // ------------------------------------------------
-
       prisma.shipment.count({
         where: {
           status: "OUT_FOR_DELIVERY",
         },
       }),
-
-      // ------------------------------------------------
-      // DELIVERED
-      // ------------------------------------------------
 
       prisma.shipment.count({
         where: {
@@ -1155,20 +1347,11 @@ export const getAdminDashboard = async (
         },
       }),
 
-      // ------------------------------------------------
-      // RETURNED TO VENDOR
-      // ------------------------------------------------
-
       prisma.returnRequest.count({
         where: {
-          status:
-            "RETURNED_TO_VENDOR",
+          status: "RETURNED_TO_VENDOR",
         },
       }),
-
-      // ------------------------------------------------
-      // CANCELLED
-      // ------------------------------------------------
 
       prisma.shipment.count({
         where: {
@@ -1176,44 +1359,39 @@ export const getAdminDashboard = async (
         },
       }),
 
-      // ==================================================
+      // ==========================================================
       // PICKUPS
-      // ==================================================
+      // ==========================================================
 
-      // TOTAL
       prisma.pickup.count(),
 
-      // REQUESTED
       prisma.pickup.count({
         where: {
           status: "REQUESTED",
         },
       }),
 
-      // ASSIGNED
       prisma.pickup.count({
         where: {
           status: "ASSIGNED",
         },
       }),
 
-      // COMPLETED
       prisma.pickup.count({
         where: {
           status: "PICKUP_DONE",
         },
       }),
 
-      // CANCELLED
       prisma.pickup.count({
         where: {
           status: "CANCELLED",
         },
       }),
 
-      // ==================================================
+      // ==========================================================
       // SYSTEM
-      // ==================================================
+      // ==========================================================
 
       prisma.location.count(),
 
@@ -1223,9 +1401,9 @@ export const getAdminDashboard = async (
 
       prisma.carrier.count(),
 
-      // ==================================================
+      // ==========================================================
       // RECENT SHIPMENTS
-      // ==================================================
+      // ==========================================================
 
       prisma.shipment.findMany({
         orderBy: {
@@ -1235,10 +1413,6 @@ export const getAdminDashboard = async (
         take: 3,
 
         select: {
-          // ------------------------------------------------
-          // SHIPMENT
-          // ------------------------------------------------
-
           id: true,
 
           trackingNumber: true,
@@ -1269,84 +1443,61 @@ export const getAdminDashboard = async (
 
           updatedAt: true,
 
-          // ------------------------------------------------
+          // ======================================================
           // VENDOR
-          // ------------------------------------------------
+          // ======================================================
 
           vendor: {
             select: {
               id: true,
-
               companyName: true,
             },
           },
 
-          // ------------------------------------------------
+          // ======================================================
           // RIDER
-          // ------------------------------------------------
+          // ======================================================
 
           rider: {
             select: {
               id: true,
-
               phone: true,
 
               user: {
                 select: {
                   id: true,
-
                   name: true,
                 },
               },
             },
           },
 
-          // ------------------------------------------------
+          // ======================================================
           // RETURN REQUEST
-          // ------------------------------------------------
-          //
-          // IMPORTANT:
-          // NO returnTrackingNumber.
-          //
-          // The shipment's original trackingNumber
-          // remains the tracking number for the return.
-          //
-          // ------------------------------------------------
+          // ======================================================
 
           returnRequest: {
             select: {
               id: true,
-
               shipmentId: true,
-
               status: true,
-
               reason: true,
-
               description: true,
-
               returnCharge: true,
-
               requestedAt: true,
-
               pickedUpAt: true,
-
               completedAt: true,
-
               notes: true,
-
               riderId: true,
 
               rider: {
                 select: {
                   id: true,
-
                   phone: true,
 
                   user: {
                     select: {
                       id: true,
-
                       name: true,
                     },
                   },
@@ -1355,47 +1506,37 @@ export const getAdminDashboard = async (
             },
           },
 
-          // ------------------------------------------------
+          // ======================================================
           // WAREHOUSE
-          // ------------------------------------------------
+          // ======================================================
 
           warehouse: {
             select: {
               id: true,
-
               name: true,
-
               city: true,
             },
           },
 
-          // ------------------------------------------------
+          // ======================================================
           // CARRIER
-          // ------------------------------------------------
+          // ======================================================
 
           carrier: {
             select: {
               id: true,
-
               name: true,
-
               phone: true,
             },
           },
         },
       }),
-    ]);
 
-    // ==================================================
-    // FINANCIAL STATISTICS
-    // ==================================================
+      // ==========================================================
+      // FINANCE
+      // ==========================================================
 
-    // --------------------------------------------------
-    // TOTAL COD
-    // --------------------------------------------------
-
-    const totalCODResult =
-      await prisma.shipment.aggregate({
+      prisma.shipment.aggregate({
         _sum: {
           codAmount: true,
         },
@@ -1407,17 +1548,9 @@ export const getAdminDashboard = async (
             not: "CANCELLED",
           },
         },
-      });
+      }),
 
-    const totalCOD =
-      totalCODResult._sum.codAmount ?? 0;
-
-    // --------------------------------------------------
-    // COD COLLECTED
-    // --------------------------------------------------
-
-    const codCollectedResult =
-      await prisma.shipment.aggregate({
+      prisma.shipment.aggregate({
         _sum: {
           codAmount: true,
         },
@@ -1427,27 +1560,9 @@ export const getAdminDashboard = async (
 
           status: "DELIVERED",
         },
-      });
+      }),
 
-    const codCollected =
-      codCollectedResult._sum.codAmount ?? 0;
-
-    // --------------------------------------------------
-    // COD PENDING
-    // --------------------------------------------------
-
-    const codPending = Math.max(
-      Number(totalCOD) -
-        Number(codCollected),
-      0
-    );
-
-    // --------------------------------------------------
-    // TOTAL SHIPPING CHARGES
-    // --------------------------------------------------
-
-    const shippingChargesResult =
-      await prisma.shipment.aggregate({
+      prisma.shipment.aggregate({
         _sum: {
           shippingCharge: true,
         },
@@ -1457,18 +1572,9 @@ export const getAdminDashboard = async (
             not: "CANCELLED",
           },
         },
-      });
+      }),
 
-    const totalShippingCharges =
-      shippingChargesResult._sum
-        .shippingCharge ?? 0;
-
-    // --------------------------------------------------
-    // SHIPPING CHARGES COLLECTED
-    // --------------------------------------------------
-
-    const shippingChargesCollectedResult =
-      await prisma.shipment.aggregate({
+      prisma.shipment.aggregate({
         _sum: {
           shippingCharge: true,
         },
@@ -1476,32 +1582,9 @@ export const getAdminDashboard = async (
         where: {
           status: "DELIVERED",
         },
-      });
+      }),
 
-    const shippingChargesCollected =
-      shippingChargesCollectedResult
-        ._sum
-        .shippingCharge ?? 0;
-
-    // --------------------------------------------------
-    // PENDING SHIPPING CHARGES
-    // --------------------------------------------------
-
-    const shippingChargesPending =
-      Math.max(
-        Number(totalShippingCharges) -
-          Number(
-            shippingChargesCollected
-          ),
-        0
-      );
-
-    // --------------------------------------------------
-    // AVERAGE SHIPPING CHARGE
-    // --------------------------------------------------
-
-    const averageShippingChargeResult =
-      await prisma.shipment.aggregate({
+      prisma.shipment.aggregate({
         _avg: {
           shippingCharge: true,
         },
@@ -1511,155 +1594,133 @@ export const getAdminDashboard = async (
             not: "CANCELLED",
           },
         },
-      });
+      }),
+    ]);
 
-    const averageShippingCharge =
-      averageShippingChargeResult._avg
-        .shippingCharge ?? 0;
+    // ============================================================
+    // FINANCIAL CALCULATIONS
+    // ============================================================
 
-    // ==================================================
+    const totalCOD = Number(
+      totalCODResult._sum.codAmount ?? 0
+    );
+
+    const codCollected = Number(
+      codCollectedResult._sum.codAmount ?? 0
+    );
+
+    const codPending = Math.max(
+      totalCOD - codCollected,
+      0
+    );
+
+    const totalShippingCharges = Number(
+      shippingChargesResult._sum.shippingCharge ?? 0
+    );
+
+    const shippingChargesCollected = Number(
+      shippingChargesCollectedResult._sum
+        .shippingCharge ?? 0
+    );
+
+    const shippingChargesPending = Math.max(
+      totalShippingCharges -
+        shippingChargesCollected,
+      0
+    );
+
+    const averageShippingCharge = Number(
+      Number(
+        averageShippingChargeResult._avg
+          .shippingCharge ?? 0
+      ).toFixed(2)
+    );
+
+    // ============================================================
     // RESPONSE
-    // ==================================================
+    // ============================================================
 
-    return res.json({
-      // ==================================================
+    return res.status(200).json({
+      // ==========================================================
       // USERS
-      // ==================================================
+      // ==========================================================
 
       users: {
-        vendors:
-          totalVendors,
-
-        staff:
-          totalStaff,
-
-        riders:
-          totalRiders,
-
-        activeRiders:
-          activeRiders,
-
-        inactiveRiders:
-          inactiveRiders,
+        vendors: totalVendors,
+        staff: totalStaff,
+        riders: totalRiders,
+        activeRiders,
+        inactiveRiders,
       },
 
-      // ==================================================
+      // ==========================================================
       // SHIPMENTS
-      // ==================================================
+      // ==========================================================
 
       shipments: {
-        total:
-          totalShipments,
-
-        created:
-          createdShipments,
-
-        inWarehouse:
-          inWarehouseShipments,
-
-        assignedToRider:
-          assignedToRiderShipments,
-
-        outForDelivery:
-          outForDeliveryShipments,
-
-        delivered:
-          deliveredShipments,
-
-        returned:
-          returnedShipments,
-
-        cancelled:
-          cancelledShipments,
+        total: totalShipments,
+        created: createdShipments,
+        inWarehouse: inWarehouseShipments,
+        assignedToRider: assignedToRiderShipments,
+        outForDelivery: outForDeliveryShipments,
+        delivered: deliveredShipments,
+        returned: returnedShipments,
+        cancelled: cancelledShipments,
       },
 
-      // ==================================================
+      // ==========================================================
       // PICKUPS
-      // ==================================================
+      // ==========================================================
 
       pickups: {
-        total:
-          totalPickups,
-
-        requested:
-          requestedPickups,
-
-        assigned:
-          assignedPickups,
-
-        completed:
-          completedPickups,
-
-        cancelled:
-          cancelledPickups,
+        total: totalPickups,
+        requested: requestedPickups,
+        assigned: assignedPickups,
+        completed: completedPickups,
+        cancelled: cancelledPickups,
       },
 
-      // ==================================================
+      // ==========================================================
       // FINANCE
-      // ==================================================
+      // ==========================================================
 
       finance: {
-        totalCOD:
-          Number(totalCOD),
+        totalCOD,
 
-        codCollected:
-          Number(codCollected),
+        codCollected,
 
-        codPending:
-          Number(codPending),
+        codPending,
 
-        totalShippingCharges:
-          Number(
-            totalShippingCharges
-          ),
+        totalShippingCharges,
 
-        shippingChargesCollected:
-          Number(
-            shippingChargesCollected
-          ),
+        shippingChargesCollected,
 
-        shippingChargesPending:
-          Number(
-            shippingChargesPending
-          ),
+        shippingChargesPending,
 
-        averageShippingCharge:
-          Number(
-            Number(
-              averageShippingCharge
-            ).toFixed(2)
-          ),
+        averageShippingCharge,
 
-        totalShippingCost:
-          null,
+        totalShippingCost: null,
 
-        totalRevenue:
-          Number(
-            totalShippingCharges
-          ),
+        totalRevenue: totalShippingCharges,
       },
 
-      // ==================================================
+      // ==========================================================
       // SYSTEM
-      // ==================================================
+      // ==========================================================
 
       system: {
-        locations:
-          totalLocations,
+        locations: totalLocations,
 
-        deliveryTypes:
-          totalDeliveryTypes,
+        deliveryTypes: totalDeliveryTypes,
 
-        warehouses:
-          totalWarehouses,
+        warehouses: totalWarehouses,
 
-        carriers:
-          totalCarriers,
+        carriers: totalCarriers,
       },
 
-      // ==================================================
+      // ==========================================================
       // RECENT SHIPMENTS
-      // ==================================================
+      // ==========================================================
 
       recentShipments,
     });
@@ -1673,7 +1734,7 @@ export const getAdminDashboard = async (
       message:
         err instanceof Error
           ? err.message
-          : "Failed to load admin dashboards",
+          : "Failed to load admin dashboard",
     });
   }
 };
