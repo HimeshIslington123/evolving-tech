@@ -15,6 +15,7 @@ import deliveryTypeRoutes from "./src/routes/deliveryTyperoutes.js"
 import userRoutes from "./src/routes/userRoutes.js"
 import locationMap from "./src/routes/location.routes.js"
 import returnRoutes from "./src/routes/returnRoutes.js"
+import adminAccountingRoutes from "./src/routes/AdminAccounting.routes.js"
 dotenv.config();
 
 const app = express();
@@ -39,6 +40,11 @@ app.use("/api/shipment", shipmentRoutes);
 app.use("/api/auth", authRoutes);
 
 app.use("/api/vendor", vendorRoutes);
+
+app.use(
+  "/api/admin/accounting",
+  adminAccountingRoutes
+);
 app.use("/api/users", userRoutes);
 app.use("/api/locationRate", locationMap);
 //app.use("/api/locationRate", locationRateRoutes);

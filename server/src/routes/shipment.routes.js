@@ -1,7 +1,9 @@
 import express from "express";
+
 import {
   authenticate,
 } from "../middlewae/authMiddleware.js";
+
 import {
   createShipment,
   getAllShipments,
@@ -18,37 +20,103 @@ import {
 
 const router = express.Router();
 
-
+// =====================================
+// CREATE SHIPMENT
+// =====================================
 router.post(
   "/",
   authenticate,
   createShipment
 );
 
-router.get("/", getAllShipments);
-router.get("/my", authenticate, getMyShipments);
+// =====================================
+// GET ALL SHIPMENTS
+// =====================================
+router.get(
+  "/",
+  authenticate,
+  getAllShipments
+);
+
+// =====================================
+// GET MY VENDOR SHIPMENTS
+// =====================================
+router.get(
+  "/my",
+  authenticate,
+  getMyShipments
+);
+
+// =====================================
+// PUBLIC TRACKING
+// =====================================
 router.get(
   "/tracking/:trackingNumber",
   getShipmentByTracking
 );
 
+// =====================================
+// GET MY RIDER SHIPMENTS
+// =====================================
 router.get(
   "/my-shipments",
   authenticate,
   getMyRiderShipments
 );
-router.get("/:id", getShipment);
 
-router.put("/:id", updateShipment);
+// =====================================
+// GET SINGLE SHIPMENT
+// =====================================
+router.get(
+  "/:id",
+  authenticate,
+  getShipment
+);
 
-router.patch("/:id/status", updateStatus);
+// =====================================
+// UPDATE SHIPMENT
+// =====================================
+router.put(
+  "/:id",
+  authenticate,
+  updateShipment
+);
 
-router.post("/:id/message", addShipmentMessage);
+// =====================================
+// UPDATE SHIPMENT STATUS
+// IMPORTANT: authenticate added
+// =====================================
+router.patch(
+  "/:id/status",
+  authenticate,
+  updateStatus
+);
 
-router.delete("/:id", deleteShipment);
+// =====================================
+// ADD SHIPMENT MESSAGE
+// =====================================
+router.post(
+  "/:id/message",
+  authenticate,
+  addShipmentMessage
+);
 
+// =====================================
+// DELETE SHIPMENT
+// =====================================
+router.delete(
+  "/:id",
+  authenticate,
+  deleteShipment
+);
+
+// =====================================
+// ASSIGN RIDER
+// =====================================
 router.patch(
   "/:id/assign-rider",
+  authenticate,
   assignRider
 );
+
 export default router;

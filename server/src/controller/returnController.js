@@ -5,7 +5,7 @@ import prisma from "../config/prisma.js";
 // ============================================================
 
 const getUserRole = (req) => {
-  return req.user?.role?.toUpperCase();
+  return String(req.user?.role || "").toUpperCase();
 };
 
 // ============================================================
@@ -22,11 +22,17 @@ const getVendorId = async (req) => {
   }
 
   if (req.user?.id) {
-    const vendor = await prisma.vendor.findUnique({
-      where: {
-        userId: Number(req.user.id),
-      },
-    });
+    const vendor =
+      await prisma.vendor.findUnique({
+        where: {
+          userId:
+            Number(req.user.id),
+        },
+
+        select: {
+          id: true,
+        },
+      });
 
     return vendor?.id ?? null;
   }
@@ -48,11 +54,17 @@ const getRiderId = async (req) => {
   }
 
   if (req.user?.id) {
-    const rider = await prisma.rider.findUnique({
-      where: {
-        userId: Number(req.user.id),
-      },
-    });
+    const rider =
+      await prisma.rider.findUnique({
+        where: {
+          userId:
+            Number(req.user.id),
+        },
+
+        select: {
+          id: true,
+        },
+      });
 
     return rider?.id ?? null;
   }
@@ -94,7 +106,8 @@ const validReturnStatuses = [
 // ============================================================
 
 const shipmentStatusMap = {
-  REQUESTED: "RETURN_REQUESTED",
+  REQUESTED:
+    "RETURN_REQUESTED",
 
   ASSIGNED_TO_RIDER:
     "RETURN_ASSIGNED_TO_RIDER",
@@ -132,9 +145,17 @@ const returnInclude = {
     },
   },
 
+  accountingEntries: true,
+
   shipment: {
     include: {
       vendor: {
+        include: {
+          user: true,
+        },
+      },
+
+      createdByStaff: {
         include: {
           user: true,
         },
@@ -146,11 +167,17 @@ const returnInclude = {
         },
       },
 
+      codCollection: true,
+
+      accountingEntries: true,
+
       trackings: {
         orderBy: {
           createdAt: "asc",
         },
       },
+
+      notifications: true,
 
       locationRate: {
         include: {
@@ -163,570 +190,645 @@ const returnInclude = {
 };
 
 // ============================================================
-// 1. VENDOR REQUEST RETURN
+// CREATE RETURN
+//
 // POST /api/returns
 // ============================================================
 
-export const createReturnRequest = async (req, res) => {
-  try {
-    const role = getUserRole(req);
+export const createReturnRequest =
+  async (req, res) => {
+    try {
+      const role =
+        getUserRole(req);
 
-    if (role !== "VENDOR") {
-      return res.status(403).json({
-        message: "Only vendors can request a return",
-      });
-    }
-
-    const vendorId = await getVendorId(req);
-
-    if (!vendorId) {
-      return res.status(403).json({
-        message: "Vendor account not found",
-      });
-    }
-
-    const {
-      shipmentId,
-      reason,
-      description,
-      notes,
-    } = req.body;
-
-    if (!shipmentId) {
-      return res.status(400).json({
-        message: "Shipment ID is required",
-      });
-    }
-
-    if (!reason) {
-      return res.status(400).json({
-        message: "Return reason is required",
-      });
-    }
-
-    if (!validReturnReasons.includes(reason)) {
-      return res.status(400).json({
-        message: "Invalid return reason",
-      });
-    }
-
-    const shipment = await prisma.shipment.findFirst({
-      where: {
-        id: String(shipmentId),
-        vendorId,
-      },
-
-      include: {
-        returnRequest: true,
-      },
-    });
-
-    if (!shipment) {
-      return res.status(404).json({
-        message: "Shipment not found",
-      });
-    }
-
-    if (shipment.status !== "DELIVERED") {
-      return res.status(400).json({
-        message:
-          "Return can only be requested after shipment is delivered",
-      });
-    }
-
-    if (shipment.returnRequest) {
-      return res.status(400).json({
-        message:
-          "A return request already exists for this shipment",
-        returnRequest: shipment.returnRequest,
-      });
-    }
-
-    const result = await prisma.$transaction(async (tx) => {
-      const returnRequest =
-        await tx.returnRequest.create({
-          data: {
-            shipmentId: shipment.id,
-            status: "REQUESTED",
-            reason,
-            description:
-              description?.trim() || null,
-            notes: notes?.trim() || null,
-            returnCharge: 0,
-          },
+      if (role !== "VENDOR") {
+        return res.status(403).json({
+          message:
+            "Only vendors can request a return.",
         });
+      }
 
-      await tx.shipment.update({
-        where: {
-          id: shipment.id,
-        },
-
-        data: {
-          status: "RETURN_REQUESTED",
-        },
-      });
-
-      await tx.tracking.create({
-        data: {
-          shipmentId: shipment.id,
-
-          status: "RETURN_REQUESTED",
-
-          location:
-            shipment.receiverAddress ||
-            shipment.deliveryZone ||
-            "Unknown",
-
-          message:
-            "Vendor requested a return for this shipment",
-
-          createdBy: String(
-            req.user?.id || vendorId
-          ),
-        },
-      });
-
-      await tx.notification.create({
-        data: {
-          shipmentId: shipment.id,
-
-          title: "Return Requested",
-
-          message:
-            `Return requested for shipment ${shipment.trackingNumber}`,
-        },
-      });
-
-      return returnRequest;
-    });
-
-    const finalReturn =
-      await prisma.returnRequest.findUnique({
-        where: {
-          id: result.id,
-        },
-
-        include: returnInclude,
-      });
-
-    return res.status(201).json({
-      message:
-        "Return request created successfully",
-
-      returnRequest: finalReturn,
-    });
-  } catch (error) {
-    console.error(
-      "CREATE RETURN ERROR:",
-      error
-    );
-
-    return res.status(500).json({
-      message:
-        "Failed to create return request",
-
-      error: error.message,
-    });
-  }
-};
-
-// ============================================================
-// 2. VENDOR GET OWN RETURNS
-// GET /api/returns/my
-// ============================================================
-
-export const getMyReturns = async (req, res) => {
-  try {
-    const role = getUserRole(req);
-
-    if (role !== "VENDOR") {
-      return res.status(403).json({
-        message:
-          "Only vendors can access their returns",
-      });
-    }
-
-    const vendorId = await getVendorId(req);
-
-    if (!vendorId) {
-      return res.status(403).json({
-        message: "Vendor account not found",
-      });
-    }
-
-    const returns =
-      await prisma.returnRequest.findMany({
-        where: {
-          shipment: {
-            vendorId,
-          },
-        },
-
-        include: returnInclude,
-
-        orderBy: {
-          createdAt: "desc",
-        },
-      });
-
-    return res.json({
-      returns,
-    });
-  } catch (error) {
-    console.error(
-      "GET MY RETURNS ERROR:",
-      error
-    );
-
-    return res.status(500).json({
-      message:
-        "Failed to fetch returns",
-
-      error: error.message,
-    });
-  }
-};
-
-// ============================================================
-// 3. ADMIN / STAFF GET ALL RETURNS
-// GET /api/returns/all
-// ============================================================
-
-export const getAllReturns = async (req, res) => {
-  try {
-    const role = getUserRole(req);
-
-    if (
-      role !== "ADMIN" &&
-      role !== "STAFF"
-    ) {
-      return res.status(403).json({
-        message:
-          "Only admin and staff can access all returns",
-      });
-    }
-
-    const returns =
-      await prisma.returnRequest.findMany({
-        include: returnInclude,
-
-        orderBy: {
-          createdAt: "desc",
-        },
-      });
-
-    return res.json({
-      returns,
-    });
-  } catch (error) {
-    console.error(
-      "GET ALL RETURNS ERROR:",
-      error
-    );
-
-    return res.status(500).json({
-      message:
-        "Failed to fetch returns",
-
-      error: error.message,
-    });
-  }
-};
-
-// ============================================================
-// 4. GET SINGLE RETURN
-// GET /api/returns/:id
-// ============================================================
-
-export const getReturnById = async (req, res) => {
-  try {
-    const returnId = String(req.params.id);
-
-    const returnRequest =
-      await prisma.returnRequest.findUnique({
-        where: {
-          id: returnId,
-        },
-
-        include: returnInclude,
-      });
-
-    if (!returnRequest) {
-      return res.status(404).json({
-        message:
-          "Return request not found",
-      });
-    }
-
-    const role = getUserRole(req);
-
-    // --------------------------------------------------------
-    // VENDOR
-    // --------------------------------------------------------
-
-    if (role === "VENDOR") {
       const vendorId =
         await getVendorId(req);
 
-      if (
-        returnRequest.shipment.vendorId !==
-        vendorId
-      ) {
+      if (!vendorId) {
         return res.status(403).json({
           message:
-            "You cannot view this return",
+            "Vendor account not found.",
         });
       }
-    }
 
-    // --------------------------------------------------------
-    // RIDER
-    // --------------------------------------------------------
+      const {
+        shipmentId,
+        reason,
+        description,
+        notes,
+      } = req.body;
 
-    if (role === "RIDER") {
-      const riderId =
-        await getRiderId(req);
-
-      const isPickupRider =
-        returnRequest.riderId === riderId;
-
-      const isReturnDeliveryRider =
-        returnRequest.returnDeliveryRiderId ===
-        riderId;
-
-      if (
-        !isPickupRider &&
-        !isReturnDeliveryRider
-      ) {
-        return res.status(403).json({
+      if (!shipmentId) {
+        return res.status(400).json({
           message:
-            "You cannot view this return",
+            "Shipment ID is required.",
         });
       }
+
+      if (!reason) {
+        return res.status(400).json({
+          message:
+            "Return reason is required.",
+        });
+      }
+
+      if (!validReturnReasons.includes(reason)) {
+        return res.status(400).json({
+          message:
+            "Invalid return reason.",
+        });
+      }
+
+      const shipment =
+        await prisma.shipment.findFirst({
+          where: {
+            id:
+              String(shipmentId),
+
+            vendorId,
+          },
+
+          include: {
+            returnRequest: true,
+          },
+        });
+
+      if (!shipment) {
+        return res.status(404).json({
+          message:
+            "Shipment not found.",
+        });
+      }
+
+      if (shipment.status !== "DELIVERED") {
+        return res.status(400).json({
+          message:
+            "Return can only be requested after shipment is delivered.",
+        });
+      }
+
+      if (shipment.returnRequest) {
+        return res.status(400).json({
+          message:
+            "A return request already exists for this shipment.",
+
+          returnRequest:
+            shipment.returnRequest,
+        });
+      }
+
+      // ======================================================
+      // TRANSACTION
+      // ======================================================
+
+      const result =
+        await prisma.$transaction(
+          async (tx) => {
+            const returnRequest =
+              await tx.returnRequest.create({
+                data: {
+                  shipmentId:
+                    shipment.id,
+
+                  status:
+                    "REQUESTED",
+
+                  reason,
+
+                  description:
+                    String(description || "").trim() ||
+                    null,
+
+                  notes:
+                    String(notes || "").trim() ||
+                    null,
+
+                  returnCharge:
+                    0,
+
+                  returnChargeType:
+                    "NO_CHARGE",
+
+                  returnChargePayer:
+                    null,
+                },
+              });
+
+            // ------------------------------------------------
+            // SHIPMENT
+            // ------------------------------------------------
+
+            await tx.shipment.update({
+              where: {
+                id:
+                  shipment.id,
+              },
+
+              data: {
+                status:
+                  "RETURN_REQUESTED",
+              },
+            });
+
+            // ------------------------------------------------
+            // TRACKING
+            // ------------------------------------------------
+
+            await tx.tracking.create({
+              data: {
+                shipmentId:
+                  shipment.id,
+
+                status:
+                  "RETURN_REQUESTED",
+
+                location:
+                  shipment.receiverAddress ||
+                  shipment.deliveryZone ||
+                  "Unknown",
+
+                message:
+                  "Vendor requested a return for this shipment.",
+
+                createdBy:
+                  String(
+                    req.user?.id ||
+                    vendorId
+                  ),
+              },
+            });
+
+            // ------------------------------------------------
+            // NOTIFICATION
+            // ------------------------------------------------
+
+            await tx.notification.create({
+              data: {
+                shipmentId:
+                  shipment.id,
+
+                title:
+                  "Return Requested",
+
+                message:
+                  `Return requested for shipment ${shipment.trackingNumber}.`,
+              },
+            });
+
+            return returnRequest;
+          },
+
+          {
+            timeout: 15000,
+            maxWait: 10000,
+          }
+        );
+
+      // ======================================================
+      // FINAL RETURN
+      // ======================================================
+
+      const finalReturn =
+        await prisma.returnRequest.findUnique({
+          where: {
+            id:
+              result.id,
+          },
+
+          include:
+            returnInclude,
+        });
+
+      return res.status(201).json({
+        message:
+          "Return request created successfully.",
+
+        returnRequest:
+          finalReturn,
+      });
+    } catch (error) {
+      console.error(
+        "CREATE RETURN ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        message:
+          "Failed to create return request.",
+
+        error:
+          error?.message,
+      });
     }
-
-    return res.json({
-      returnRequest,
-    });
-  } catch (error) {
-    console.error(
-      "GET RETURN ERROR:",
-      error
-    );
-
-    return res.status(500).json({
-      message:
-        "Failed to fetch return",
-
-      error: error.message,
-    });
-  }
-};
+  };
 
 // ============================================================
-// 5. ADMIN / STAFF ASSIGN RETURN RIDER
+// GET MY RETURNS
+//
+// GET /api/returns/my
+// ============================================================
+
+export const getMyReturns =
+  async (req, res) => {
+    try {
+      const role =
+        getUserRole(req);
+
+      if (role !== "VENDOR") {
+        return res.status(403).json({
+          message:
+            "Only vendors can access their returns.",
+        });
+      }
+
+      const vendorId =
+        await getVendorId(req);
+
+      if (!vendorId) {
+        return res.status(403).json({
+          message:
+            "Vendor account not found.",
+        });
+      }
+
+      const returns =
+        await prisma.returnRequest.findMany({
+          where: {
+            shipment: {
+              vendorId,
+            },
+          },
+
+          include:
+            returnInclude,
+
+          orderBy: {
+            createdAt:
+              "desc",
+          },
+        });
+
+      return res.json({
+        returns,
+      });
+    } catch (error) {
+      console.error(
+        "GET MY RETURNS ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        message:
+          "Failed to fetch returns.",
+
+        error:
+          error?.message,
+      });
+    }
+  };
+
+// ============================================================
+// GET ALL RETURNS
+//
+// GET /api/returns/all
+// ============================================================
+
+export const getAllReturns =
+  async (req, res) => {
+    try {
+      const role =
+        getUserRole(req);
+
+      if (
+        role !== "ADMIN" &&
+        role !== "STAFF"
+      ) {
+        return res.status(403).json({
+          message:
+            "Only admin and staff can access all returns.",
+        });
+      }
+
+      const returns =
+        await prisma.returnRequest.findMany({
+          include:
+            returnInclude,
+
+          orderBy: {
+            createdAt:
+              "desc",
+          },
+        });
+
+      return res.json({
+        returns,
+      });
+    } catch (error) {
+      console.error(
+        "GET ALL RETURNS ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        message:
+          "Failed to fetch returns.",
+
+        error:
+          error?.message,
+      });
+    }
+  };
+
+// ============================================================
+// GET SINGLE RETURN
+//
+// GET /api/returns/:id
+// ============================================================
+
+export const getReturnById =
+  async (req, res) => {
+    try {
+      const returnId =
+        String(req.params.id);
+
+      const returnRequest =
+        await prisma.returnRequest.findUnique({
+          where: {
+            id:
+              returnId,
+          },
+
+          include:
+            returnInclude,
+        });
+
+      if (!returnRequest) {
+        return res.status(404).json({
+          message:
+            "Return request not found.",
+        });
+      }
+
+      const role =
+        getUserRole(req);
+
+      // ======================================================
+      // VENDOR
+      // ======================================================
+
+      if (role === "VENDOR") {
+        const vendorId =
+          await getVendorId(req);
+
+        if (
+          returnRequest.shipment.vendorId !==
+          vendorId
+        ) {
+          return res.status(403).json({
+            message:
+              "You cannot view this return.",
+          });
+        }
+      }
+
+      // ======================================================
+      // RIDER
+      // ======================================================
+
+      if (role === "RIDER") {
+        const riderId =
+          await getRiderId(req);
+
+        const isPickupRider =
+          returnRequest.riderId === riderId;
+
+        const isReturnDeliveryRider =
+          returnRequest.returnDeliveryRiderId ===
+          riderId;
+
+        if (
+          !isPickupRider &&
+          !isReturnDeliveryRider
+        ) {
+          return res.status(403).json({
+            message:
+              "You cannot view this return.",
+          });
+        }
+      }
+
+      return res.json({
+        returnRequest,
+      });
+    } catch (error) {
+      console.error(
+        "GET RETURN ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        message:
+          "Failed to fetch return.",
+
+        error:
+          error?.message,
+      });
+    }
+  };
+
+// ============================================================
+// ASSIGN RETURN RIDER
+//
 // PATCH /api/returns/:id/assign-rider
 // ============================================================
 
-export const assignReturnRider = async (
-  req,
-  res
-) => {
-  try {
-    const role = getUserRole(req);
+export const assignReturnRider =
+  async (req, res) => {
+    try {
+      const role =
+        getUserRole(req);
 
-    if (
-      role !== "ADMIN" &&
-      role !== "STAFF"
-    ) {
-      return res.status(403).json({
-        message:
-          "Only admin or staff can assign return riders",
-      });
-    }
+      if (
+        role !== "ADMIN" &&
+        role !== "STAFF"
+      ) {
+        return res.status(403).json({
+          message:
+            "Only admin or staff can assign return riders.",
+        });
+      }
 
-    const { id } = req.params;
-    const { riderId } = req.body;
+      const id =
+        String(req.params.id);
 
-    if (!riderId) {
-      return res.status(400).json({
-        message: "Rider ID is required",
-      });
-    }
+      const numericRiderId =
+        Number(req.body.riderId);
 
-    const numericRiderId = Number(riderId);
+      if (
+        !Number.isInteger(numericRiderId) ||
+        numericRiderId <= 0
+      ) {
+        return res.status(400).json({
+          message:
+            "Valid rider ID is required.",
+        });
+      }
 
-    if (!Number.isInteger(numericRiderId)) {
-      return res.status(400).json({
-        message: "Invalid rider ID",
-      });
-    }
-
-    const returnRequest =
-      await prisma.returnRequest.findUnique({
-        where: {
-          id,
-        },
-      });
-
-    if (!returnRequest) {
-      return res.status(404).json({
-        message:
-          "Return request not found",
-      });
-    }
-
-    const rider =
-      await prisma.rider.findUnique({
-        where: {
-          id: numericRiderId,
-        },
-
-        include: {
-          user: true,
-        },
-      });
-
-    if (!rider) {
-      return res.status(404).json({
-        message: "Rider not found",
-      });
-    }
-
-    // ========================================================
-    // REQUESTED
-    // Customer -> Warehouse
-    // ========================================================
-
-    if (
-      returnRequest.status ===
-      "REQUESTED"
-    ) {
-      const updatedReturn =
-        await prisma.returnRequest.update({
+      const returnRequest =
+        await prisma.returnRequest.findUnique({
           where: {
             id,
-          },
-
-          data: {
-            riderId:
-              numericRiderId,
-
-            status:
-              "ASSIGNED_TO_RIDER",
-          },
-
-          include: {
-            rider: {
-              include: {
-                user: true,
-              },
-            },
-
-            returnDeliveryRider: {
-              include: {
-                user: true,
-              },
-            },
-
-            shipment: true,
           },
         });
 
-      return res.status(200).json({
-        message:
-          "Pickup rider assigned successfully",
+      if (!returnRequest) {
+        return res.status(404).json({
+          message:
+            "Return request not found.",
+        });
+      }
 
-        returnRequest:
-          updatedReturn,
-      });
-    }
-
-    // ========================================================
-    // IN WAREHOUSE + DELIVER TO VENDOR
-    // Warehouse -> Vendor
-    // ========================================================
-
-    if (
-      returnRequest.status ===
-        "IN_WAREHOUSE" &&
-      returnRequest.deliveryOption ===
-        "DELIVER_TO_VENDOR"
-    ) {
-      const updatedReturn =
-        await prisma.returnRequest.update({
+      const rider =
+        await prisma.rider.findUnique({
           where: {
-            id,
-          },
-
-          data: {
-            returnDeliveryRiderId:
+            id:
               numericRiderId,
           },
 
           include: {
-            rider: {
-              include: {
-                user: true,
-              },
-            },
-
-            returnDeliveryRider: {
-              include: {
-                user: true,
-              },
-            },
-
-            shipment: true,
+            user: true,
           },
         });
 
-      return res.status(200).json({
-        message:
-          "Return delivery rider assigned successfully",
+      if (!rider) {
+        return res.status(404).json({
+          message:
+            "Rider not found.",
+        });
+      }
 
-        returnRequest:
-          updatedReturn,
-      });
-    }
+      if (!rider.isAvailable) {
+        return res.status(400).json({
+          message:
+            "Rider is not available.",
+        });
+      }
 
-    // ========================================================
-    // VENDOR PICKUP
-    // ========================================================
+      // ======================================================
+      // PICKUP RIDER
+      // ======================================================
 
-    if (
-      returnRequest.status ===
-        "IN_WAREHOUSE" &&
-      returnRequest.deliveryOption ===
-        "VENDOR_PICKUP"
-    ) {
+      if (
+        returnRequest.status ===
+        "REQUESTED"
+      ) {
+        const updatedReturn =
+          await prisma.returnRequest.update({
+            where: {
+              id,
+            },
+
+            data: {
+              riderId:
+                numericRiderId,
+
+              status:
+                "ASSIGNED_TO_RIDER",
+            },
+
+            include:
+              returnInclude,
+          });
+
+        return res.status(200).json({
+          message:
+            "Pickup rider assigned successfully.",
+
+          returnRequest:
+            updatedReturn,
+        });
+      }
+
+      // ======================================================
+      // RETURN DELIVERY RIDER
+      // ======================================================
+
+      if (
+        returnRequest.status ===
+          "IN_WAREHOUSE" &&
+        returnRequest.deliveryOption ===
+          "DELIVER_TO_VENDOR"
+      ) {
+        const updatedReturn =
+          await prisma.returnRequest.update({
+            where: {
+              id,
+            },
+
+            data: {
+              returnDeliveryRiderId:
+                numericRiderId,
+            },
+
+            include:
+              returnInclude,
+          });
+
+        return res.status(200).json({
+          message:
+            "Return delivery rider assigned successfully.",
+
+          returnRequest:
+            updatedReturn,
+        });
+      }
+
+      // ======================================================
+      // VENDOR PICKUP
+      // ======================================================
+
+      if (
+        returnRequest.status ===
+          "IN_WAREHOUSE" &&
+        returnRequest.deliveryOption ===
+          "VENDOR_PICKUP"
+      ) {
+        return res.status(400).json({
+          message:
+            "A return delivery rider is not required because the vendor will pick up the package.",
+        });
+      }
+
       return res.status(400).json({
         message:
-          "A return delivery rider is not required because the vendor will pick up the package.",
+          "Rider cannot be assigned at the current return stage.",
+      });
+    } catch (error) {
+      console.error(
+        "ASSIGN RETURN RIDER ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        message:
+          "Failed to assign rider.",
+
+        error:
+          error?.message,
       });
     }
-
-    return res.status(400).json({
-      message:
-        "Rider cannot be assigned at the current return stage.",
-    });
-  } catch (error) {
-    console.error(
-      "ASSIGN RETURN RIDER ERROR:",
-      error
-    );
-
-    return res.status(500).json({
-      message:
-        "Failed to assign rider",
-
-      error: error.message,
-    });
-  }
-};
+  };
 
 // ============================================================
-// 6. RIDER GET OWN RETURNS
+// RIDER GET OWN RETURNS
+//
 // GET /api/returns/rider/my
 // ============================================================
 
@@ -739,7 +841,7 @@ export const getMyRiderReturns =
       if (role !== "RIDER") {
         return res.status(403).json({
           message:
-            "Only riders can access rider returns",
+            "Only riders can access rider returns.",
         });
       }
 
@@ -749,7 +851,7 @@ export const getMyRiderReturns =
       if (!riderId) {
         return res.status(403).json({
           message:
-            "Rider account not found",
+            "Rider account not found.",
         });
       }
 
@@ -771,7 +873,8 @@ export const getMyRiderReturns =
             returnInclude,
 
           orderBy: {
-            createdAt: "desc",
+            createdAt:
+              "desc",
           },
         });
 
@@ -786,732 +889,74 @@ export const getMyRiderReturns =
 
       return res.status(500).json({
         message:
-          "Failed to fetch rider returns",
+          "Failed to fetch rider returns.",
 
         error:
-          error.message,
+          error?.message,
       });
     }
   };
 
 // ============================================================
-// 7. UPDATE RETURN STATUS
+// UPDATE RETURN STATUS
+//
 // PATCH /api/returns/:id/status
 // ============================================================
 
-export const updateReturnStatus = async (
-  req,
-  res
-) => {
-  try {
-    console.log(
-      "\n========== UPDATE RETURN STATUS =========="
-    );
-
-    const role = getUserRole(req);
-
-    const returnId =
-      String(req.params.id);
-
-    const {
-      status,
-      location,
-      notes,
-    } = req.body;
-
-    console.log("ROLE:", role);
-    console.log(
-      "RETURN ID:",
-      returnId
-    );
-    console.log(
-      "REQUESTED STATUS:",
-      status
-    );
-
-    // ========================================================
-    // ROLE CHECK
-    // ========================================================
-
-    if (
-      ![
-        "RIDER",
-        "ADMIN",
-        "STAFF",
-      ].includes(role)
-    ) {
-      return res.status(403).json({
-        message:
-          "You cannot update return status",
-      });
-    }
-
-    // ========================================================
-    // STATUS VALIDATION
-    // ========================================================
-
-    if (
-      !validReturnStatuses.includes(
-        status
-      )
-    ) {
-      return res.status(400).json({
-        message:
-          "Invalid return status",
-      });
-    }
-
-    // ========================================================
-    // FIND RETURN
-    // ========================================================
-
-    const returnRequest =
-      await prisma.returnRequest.findUnique({
-        where: {
-          id: returnId,
-        },
-
-        include: {
-          shipment: true,
-        },
-      });
-
-    if (!returnRequest) {
-      return res.status(404).json({
-        message:
-          "Return request not found",
-      });
-    }
-
-    console.log(
-      "CURRENT STATUS:",
-      returnRequest.status
-    );
-
-    console.log(
-      "DELIVERY OPTION:",
-      returnRequest.deliveryOption
-    );
-
-    console.log(
-      "PICKUP RIDER:",
-      returnRequest.riderId
-    );
-
-    console.log(
-      "RETURN DELIVERY RIDER:",
-      returnRequest.returnDeliveryRiderId
-    );
-
-    // ========================================================
-    // SAME STATUS
-    // ========================================================
-
-    if (
-      returnRequest.status ===
-      status
-    ) {
-      return res.status(400).json({
-        message:
-          `Return is already ${status}`,
-      });
-    }
-
-    // ========================================================
-    // RIDER ID
-    // ========================================================
-
-    let currentRiderId = null;
-
-    if (role === "RIDER") {
-      currentRiderId =
-        await getRiderId(req);
-
-      if (!currentRiderId) {
-        return res.status(403).json({
-          message:
-            "Rider account not found",
-        });
-      }
-    }
-
-    // ========================================================
-    // TRANSITION VALIDATION
-    // ========================================================
-
-    let transitionAllowed =
-      false;
-
-    // REQUESTED
-    if (
-      returnRequest.status ===
-      "REQUESTED"
-    ) {
-      transitionAllowed =
-        status ===
-          "ASSIGNED_TO_RIDER" ||
-        status === "CANCELLED";
-    }
-
-    // ASSIGNED TO RIDER
-    else if (
-      returnRequest.status ===
-      "ASSIGNED_TO_RIDER"
-    ) {
-      transitionAllowed =
-        status ===
-          "PICKED_UP_FROM_CUSTOMER" ||
-        status === "CANCELLED";
-    }
-
-    // PICKED UP
-    else if (
-      returnRequest.status ===
-      "PICKED_UP_FROM_CUSTOMER"
-    ) {
-      transitionAllowed =
-        status === "IN_WAREHOUSE";
-    }
-
-    // IN WAREHOUSE
-    else if (
-      returnRequest.status ===
-      "IN_WAREHOUSE"
-    ) {
-      // Vendor pickup
-      if (
-        returnRequest.deliveryOption ===
-        "VENDOR_PICKUP"
-      ) {
-        transitionAllowed =
-          status ===
-          "RETURNED_TO_VENDOR";
-      }
-
-      // Delivery to vendor
-      else if (
-        returnRequest.deliveryOption ===
-        "DELIVER_TO_VENDOR"
-      ) {
-        transitionAllowed =
-          status ===
-          "OUT_FOR_RETURN";
-      }
-
-      else {
-        return res.status(400).json({
-          message:
-            "Return delivery option must be selected before updating the return from warehouse.",
-        });
-      }
-    }
-
-    // OUT FOR RETURN
-    else if (
-      returnRequest.status ===
-      "OUT_FOR_RETURN"
-    ) {
-      transitionAllowed =
-        status ===
-        "RETURNED_TO_VENDOR";
-    }
-
-    // FINAL STATES
-    else {
-      transitionAllowed = false;
-    }
-
-    // ========================================================
-    // TRANSITION REJECTED
-    // ========================================================
-
-    if (!transitionAllowed) {
-      return res.status(400).json({
-        message:
-          `Cannot change return status from ${returnRequest.status} to ${status}`,
-      });
-    }
-
-    // ========================================================
-    // RIDER PERMISSION
-    // ========================================================
-
-    if (role === "RIDER") {
-      // ------------------------------------------------------
-      // PICKUP RIDER
-      // ------------------------------------------------------
-
-      if (
-        (
-          returnRequest.status ===
-            "ASSIGNED_TO_RIDER" &&
-          status ===
-            "PICKED_UP_FROM_CUSTOMER"
-        ) ||
-        (
-          returnRequest.status ===
-            "PICKED_UP_FROM_CUSTOMER" &&
-          status ===
-            "IN_WAREHOUSE"
-        )
-      ) {
-        if (
-          returnRequest.riderId !==
-          currentRiderId
-        ) {
-          return res.status(403).json({
-            message:
-              "This return pickup is not assigned to you",
-          });
-        }
-      }
-
-      // ------------------------------------------------------
-      // RETURN DELIVERY RIDER
-      // ------------------------------------------------------
-
-      if (
-        returnRequest.status ===
-          "OUT_FOR_RETURN" &&
-        status ===
-          "RETURNED_TO_VENDOR"
-      ) {
-        if (
-          returnRequest.returnDeliveryRiderId !==
-          currentRiderId
-        ) {
-          return res.status(403).json({
-            message:
-              "This return delivery is not assigned to you",
-          });
-        }
-      }
-
-      // ------------------------------------------------------
-      // VENDOR PICKUP
-      // ------------------------------------------------------
-
-      if (
-        returnRequest.status ===
-          "IN_WAREHOUSE" &&
-        status ===
-          "RETURNED_TO_VENDOR" &&
-        returnRequest.deliveryOption ===
-          "VENDOR_PICKUP"
-      ) {
-        return res.status(403).json({
-          message:
-            "Vendor pickup returns are completed by staff or admin after vendor pickup.",
-        });
-      }
-    }
-
-    // ========================================================
-    // OUT FOR RETURN VALIDATION
-    // ========================================================
-
-    if (
-      status === "OUT_FOR_RETURN"
-    ) {
-      if (
-        returnRequest.deliveryOption !==
-        "DELIVER_TO_VENDOR"
-      ) {
-        return res.status(400).json({
-          message:
-            "This return is not configured for delivery to vendor.",
-        });
-      }
-
-      if (
-        !returnRequest.returnDeliveryRiderId
-      ) {
-        return res.status(400).json({
-          message:
-            "Please assign a return delivery rider first.",
-        });
-      }
-    }
-
-    // ========================================================
-    // RETURNED TO VENDOR VALIDATION
-    // ========================================================
-
-    if (
-      status ===
-      "RETURNED_TO_VENDOR"
-    ) {
-      if (
-        returnRequest.deliveryOption ===
-        "VENDOR_PICKUP"
-      ) {
-        // No rider required.
-      }
-
-      else if (
-        returnRequest.deliveryOption ===
-        "DELIVER_TO_VENDOR"
-      ) {
-        if (
-          !returnRequest.returnDeliveryRiderId
-        ) {
-          return res.status(400).json({
-            message:
-              "Return delivery rider is required.",
-          });
-        }
-      }
-
-      else {
-        return res.status(400).json({
-          message:
-            "Return delivery option is required.",
-        });
-      }
-    }
-
-    // ========================================================
-    // UPDATE DATA
-    // ========================================================
-
-    const updateData = {
-      status,
-    };
-
-    if (notes !== undefined) {
-      updateData.notes =
-        notes?.trim() || null;
-    }
-
-    if (
-      status ===
-        "PICKED_UP_FROM_CUSTOMER" &&
-      !returnRequest.pickedUpAt
-    ) {
-      updateData.pickedUpAt =
-        new Date();
-    }
-
-    if (
-      status ===
-        "RETURNED_TO_VENDOR" &&
-      !returnRequest.completedAt
-    ) {
-      updateData.completedAt =
-        new Date();
-    }
-
-    // ========================================================
-    // SHIPMENT STATUS
-    // ========================================================
-
-    const shipmentStatus =
-      shipmentStatusMap[status];
-
-    if (!shipmentStatus) {
-      return res.status(400).json({
-        message:
-          "No shipment status mapping found",
-      });
-    }
-
-    // ========================================================
-    // TRACKING
-    // ========================================================
-
-    const trackingMessages = {
-      REQUESTED:
-        "Return requested by vendor",
-
-      ASSIGNED_TO_RIDER:
-        "Return pickup assigned to rider",
-
-      PICKED_UP_FROM_CUSTOMER:
-        "Return package picked up from customer",
-
-      IN_WAREHOUSE:
-        "Return package received at warehouse",
-
-      OUT_FOR_RETURN:
-        "Return package is out for delivery to vendor",
-
-      RETURNED_TO_VENDOR:
-        "Return package successfully delivered to vendor",
-
-      CANCELLED:
-        "Return request cancelled",
-    };
-
-    const trackingStatusMap = {
-      REQUESTED:
-        "RETURN_REQUESTED",
-
-      ASSIGNED_TO_RIDER:
-        "RETURN_ASSIGNED_TO_RIDER",
-
-      PICKED_UP_FROM_CUSTOMER:
-        "RETURN_PICKED_UP_FROM_CUSTOMER",
-
-      IN_WAREHOUSE:
-        "RETURN_IN_WAREHOUSE",
-
-      OUT_FOR_RETURN:
-        "OUT_FOR_RETURN",
-
-      RETURNED_TO_VENDOR:
-        "RETURNED_TO_VENDOR",
-
-      CANCELLED:
-        "DELIVERED",
-    };
-
-    const trackingStatus =
-      trackingStatusMap[status];
-
-    // ========================================================
-    // TRANSACTION
-    // ========================================================
-
-    const transactionResult =
-      await prisma.$transaction(
-        async (tx) => {
-          const updatedReturn =
-            await tx.returnRequest.update({
-              where: {
-                id: returnId,
-              },
-
-              data: updateData,
-
-              select: {
-                id: true,
-                shipmentId: true,
-                status: true,
-                deliveryOption: true,
-                riderId: true,
-                returnDeliveryRiderId: true,
-              },
-            });
-
-          await tx.shipment.update({
-            where: {
-              id:
-                returnRequest.shipmentId,
-            },
-
-            data: {
-              status:
-                shipmentStatus,
-            },
-          });
-
-          await tx.tracking.create({
-            data: {
-              shipmentId:
-                returnRequest.shipmentId,
-
-              status:
-                trackingStatus,
-
-              location:
-                location?.trim() ||
-                (
-                  status ===
-                  "IN_WAREHOUSE"
-                    ? "Warehouse"
-                    : returnRequest
-                        .shipment
-                        .receiverAddress ||
-                      "Unknown"
-                ),
-
-              message:
-                trackingMessages[
-                  status
-                ] ||
-                `Return status updated to ${status.replaceAll(
-                  "_",
-                  " "
-                )}`,
-
-              createdBy: String(
-                req.user?.id || ""
-              ),
-            },
-          });
-
-          await tx.notification.create({
-            data: {
-              shipmentId:
-                returnRequest.shipmentId,
-
-              title:
-                "Return Status Updated",
-
-              message:
-                `Return for shipment ${
-                  returnRequest
-                    .shipment
-                    .trackingNumber
-                } is now ${status.replaceAll(
-                  "_",
-                  " "
-                )}`,
-            },
-          });
-
-          return {
-            returnId:
-              updatedReturn.id,
-
-            shipmentId:
-              updatedReturn.shipmentId,
-
-            status:
-              updatedReturn.status,
-          };
-        },
-        {
-          timeout: 15000,
-          maxWait: 10000,
-        }
-      );
-
-    // ========================================================
-    // FETCH COMPLETE RETURN
-    // ========================================================
-
-    const finalReturn =
-      await prisma.returnRequest.findUnique({
-        where: {
-          id:
-            transactionResult.returnId,
-        },
-
-        include:
-          returnInclude,
-      });
-
-    if (!finalReturn) {
-      return res.status(404).json({
-        message:
-          "Return was updated but could not be loaded",
-      });
-    }
-
-    console.log(
-      "RETURN STATUS UPDATED:",
-      finalReturn.status
-    );
-
-    console.log(
-      "==========================================\n"
-    );
-
-    return res.json({
-      message:
-        "Return status updated successfully",
-
-      returnRequest:
-        finalReturn,
-    });
-  } catch (error) {
-    console.error(
-      "\n========== UPDATE RETURN STATUS ERROR =========="
-    );
-
-    console.error(error);
-
-    console.error(
-      "=================================================\n"
-    );
-
-    return res.status(500).json({
-      message:
-        "Failed to update return status",
-
-      error:
-        error?.message ||
-        "Unknown server error",
-
-      code:
-        error?.code || null,
-    });
-  }
-};
-
-// ============================================================
-// 8. SELECT RETURN DELIVERY OPTION
-// PATCH /api/returns/:id/delivery-option
-// ============================================================
-
-export const selectReturnDeliveryOption =
+export const updateReturnStatus =
   async (req, res) => {
     try {
-      console.log(
-        "\n========== SELECT RETURN DELIVERY OPTION =========="
-      );
-
       const role =
         getUserRole(req);
 
-      const { id } = req.params;
+      const returnId =
+        String(req.params.id);
 
       const {
-        deliveryOption,
+        status,
+        location,
+        notes,
       } = req.body;
 
-      // --------------------------------------------------------
-      // ROLE
-      // --------------------------------------------------------
-
-      if (role !== "VENDOR") {
-        return res.status(403).json({
-          message:
-            "Only vendors can select return delivery option",
-        });
-      }
-
-      // --------------------------------------------------------
-      // OPTION
-      // --------------------------------------------------------
+      // ======================================================
+      // PERMISSION
+      // ======================================================
 
       if (
         ![
-          "VENDOR_PICKUP",
-          "DELIVER_TO_VENDOR",
-        ].includes(
-          deliveryOption
-        )
+          "RIDER",
+          "ADMIN",
+          "STAFF",
+        ].includes(role)
+      ) {
+        return res.status(403).json({
+          message:
+            "You cannot update return status.",
+        });
+      }
+
+      // ======================================================
+      // VALID STATUS
+      // ======================================================
+
+      if (
+        !validReturnStatuses.includes(status)
       ) {
         return res.status(400).json({
           message:
-            "Invalid return delivery option",
+            "Invalid return status.",
         });
       }
 
-      // --------------------------------------------------------
-      // VENDOR
-      // --------------------------------------------------------
-
-      const vendorId =
-        await getVendorId(req);
-
-      if (!vendorId) {
-        return res.status(403).json({
-          message:
-            "Vendor account not found",
-        });
-      }
-
-      // --------------------------------------------------------
-      // RETURN
-      // --------------------------------------------------------
+      // ======================================================
+      // GET RETURN
+      // ======================================================
 
       const returnRequest =
         await prisma.returnRequest.findUnique({
           where: {
-            id: String(id),
+            id:
+              returnId,
           },
 
           include: {
@@ -1522,13 +967,594 @@ export const selectReturnDeliveryOption =
       if (!returnRequest) {
         return res.status(404).json({
           message:
-            "Return request not found",
+            "Return request not found.",
         });
       }
 
-      // --------------------------------------------------------
-      // OWNERSHIP
-      // --------------------------------------------------------
+      if (
+        returnRequest.status ===
+        status
+      ) {
+        return res.status(400).json({
+          message:
+            `Return is already ${status}.`,
+        });
+      }
+
+      // ======================================================
+      // RIDER
+      // ======================================================
+
+      let currentRiderId = null;
+
+      if (role === "RIDER") {
+        currentRiderId =
+          await getRiderId(req);
+
+        if (!currentRiderId) {
+          return res.status(403).json({
+            message:
+              "Rider account not found.",
+          });
+        }
+      }
+
+      // ======================================================
+      // TRANSITIONS
+      // ======================================================
+
+      let transitionAllowed =
+        false;
+
+      if (
+        returnRequest.status ===
+        "REQUESTED"
+      ) {
+        transitionAllowed =
+          status === "ASSIGNED_TO_RIDER" ||
+          status === "CANCELLED";
+      }
+
+      else if (
+        returnRequest.status ===
+        "ASSIGNED_TO_RIDER"
+      ) {
+        transitionAllowed =
+          status ===
+            "PICKED_UP_FROM_CUSTOMER" ||
+          status === "CANCELLED";
+      }
+
+      else if (
+        returnRequest.status ===
+        "PICKED_UP_FROM_CUSTOMER"
+      ) {
+        transitionAllowed =
+          status === "IN_WAREHOUSE";
+      }
+
+      else if (
+        returnRequest.status ===
+        "IN_WAREHOUSE"
+      ) {
+        if (
+          returnRequest.deliveryOption ===
+          "VENDOR_PICKUP"
+        ) {
+          transitionAllowed =
+            status ===
+            "RETURNED_TO_VENDOR";
+        }
+
+        else if (
+          returnRequest.deliveryOption ===
+          "DELIVER_TO_VENDOR"
+        ) {
+          transitionAllowed =
+            status ===
+            "OUT_FOR_RETURN";
+        }
+
+        else {
+          return res.status(400).json({
+            message:
+              "Return delivery option must be selected before leaving the warehouse.",
+          });
+        }
+      }
+
+      else if (
+        returnRequest.status ===
+        "OUT_FOR_RETURN"
+      ) {
+        transitionAllowed =
+          status ===
+          "RETURNED_TO_VENDOR";
+      }
+
+      if (!transitionAllowed) {
+        return res.status(400).json({
+          message:
+            `Cannot change return status from ${returnRequest.status} to ${status}.`,
+        });
+      }
+
+      // ======================================================
+      // RIDER PERMISSIONS
+      // ======================================================
+
+      if (role === "RIDER") {
+        // Pickup rider
+        if (
+          (
+            returnRequest.status ===
+              "ASSIGNED_TO_RIDER" &&
+            status ===
+              "PICKED_UP_FROM_CUSTOMER"
+          ) ||
+          (
+            returnRequest.status ===
+              "PICKED_UP_FROM_CUSTOMER" &&
+            status ===
+              "IN_WAREHOUSE"
+          )
+        ) {
+          if (
+            returnRequest.riderId !==
+            currentRiderId
+          ) {
+            return res.status(403).json({
+              message:
+                "This return pickup is not assigned to you.",
+            });
+          }
+        }
+
+        // Delivery rider
+        if (
+          returnRequest.status ===
+            "OUT_FOR_RETURN" &&
+          status ===
+            "RETURNED_TO_VENDOR"
+        ) {
+          if (
+            returnRequest.returnDeliveryRiderId !==
+            currentRiderId
+          ) {
+            return res.status(403).json({
+              message:
+                "This return delivery is not assigned to you.",
+            });
+          }
+        }
+
+        // Vendor pickup cannot be completed by rider
+        if (
+          returnRequest.status ===
+            "IN_WAREHOUSE" &&
+          status ===
+            "RETURNED_TO_VENDOR" &&
+          returnRequest.deliveryOption ===
+            "VENDOR_PICKUP"
+        ) {
+          return res.status(403).json({
+            message:
+              "Vendor pickup returns are completed by staff or admin.",
+          });
+        }
+      }
+
+      // ======================================================
+      // OUT FOR RETURN
+      // ======================================================
+
+      if (
+        status ===
+        "OUT_FOR_RETURN"
+      ) {
+        if (
+          returnRequest.deliveryOption !==
+          "DELIVER_TO_VENDOR"
+        ) {
+          return res.status(400).json({
+            message:
+              "This return is not configured for delivery to vendor.",
+          });
+        }
+
+        if (
+          !returnRequest.returnDeliveryRiderId
+        ) {
+          return res.status(400).json({
+            message:
+              "Please assign a return delivery rider first.",
+          });
+        }
+      }
+
+      // ======================================================
+      // RETURNED TO VENDOR
+      // ======================================================
+
+      if (
+        status ===
+        "RETURNED_TO_VENDOR"
+      ) {
+        if (
+          returnRequest.deliveryOption ===
+          "VENDOR_PICKUP"
+        ) {
+          // No rider required.
+        }
+
+        else if (
+          returnRequest.deliveryOption ===
+          "DELIVER_TO_VENDOR"
+        ) {
+          if (
+            !returnRequest.returnDeliveryRiderId
+          ) {
+            return res.status(400).json({
+              message:
+                "Return delivery rider is required.",
+            });
+          }
+        }
+
+        else {
+          return res.status(400).json({
+            message:
+              "Return delivery option is required.",
+          });
+        }
+      }
+
+      // ======================================================
+      // UPDATE RETURN DATA
+      // ======================================================
+
+      const updateData = {
+        status,
+      };
+
+      if (notes !== undefined) {
+        updateData.notes =
+          String(notes || "").trim() ||
+          null;
+      }
+
+      if (
+        status ===
+          "PICKED_UP_FROM_CUSTOMER" &&
+        !returnRequest.pickedUpAt
+      ) {
+        updateData.pickedUpAt =
+          new Date();
+      }
+
+      if (
+        status ===
+          "RETURNED_TO_VENDOR" &&
+        !returnRequest.completedAt
+      ) {
+        updateData.completedAt =
+          new Date();
+      }
+
+      // ======================================================
+      // SHIPMENT STATUS
+      // ======================================================
+
+      const shipmentStatus =
+        shipmentStatusMap[status];
+
+      if (!shipmentStatus) {
+        return res.status(400).json({
+          message:
+            "No shipment status mapping found.",
+        });
+      }
+
+      // ======================================================
+      // TRACKING
+      // ======================================================
+
+      const trackingMessages = {
+        REQUESTED:
+          "Return requested by vendor.",
+
+        ASSIGNED_TO_RIDER:
+          "Return pickup assigned to rider.",
+
+        PICKED_UP_FROM_CUSTOMER:
+          "Return package picked up from customer.",
+
+        IN_WAREHOUSE:
+          "Return package received at warehouse.",
+
+        OUT_FOR_RETURN:
+          "Return package is out for delivery to vendor.",
+
+        RETURNED_TO_VENDOR:
+          "Return package successfully delivered to vendor.",
+
+        CANCELLED:
+          "Return request cancelled.",
+      };
+
+      const trackingStatusMap = {
+        REQUESTED:
+          "RETURN_REQUESTED",
+
+        ASSIGNED_TO_RIDER:
+          "RETURN_ASSIGNED_TO_RIDER",
+
+        PICKED_UP_FROM_CUSTOMER:
+          "RETURN_PICKED_UP_FROM_CUSTOMER",
+
+        IN_WAREHOUSE:
+          "RETURN_IN_WAREHOUSE",
+
+        OUT_FOR_RETURN:
+          "OUT_FOR_RETURN",
+
+        RETURNED_TO_VENDOR:
+          "RETURNED_TO_VENDOR",
+
+        CANCELLED:
+          "DELIVERED",
+      };
+
+      const trackingStatus =
+        trackingStatusMap[status];
+
+      // ======================================================
+      // TRANSACTION
+      // ======================================================
+
+      const transactionResult =
+        await prisma.$transaction(
+          async (tx) => {
+            const updatedReturn =
+              await tx.returnRequest.update({
+                where: {
+                  id:
+                    returnId,
+                },
+
+                data:
+                  updateData,
+
+                select: {
+                  id: true,
+                  shipmentId: true,
+                  status: true,
+                  deliveryOption: true,
+                  riderId: true,
+                  returnDeliveryRiderId: true,
+                },
+              });
+
+            // ------------------------------------------------
+            // SHIPMENT
+            // ------------------------------------------------
+
+            await tx.shipment.update({
+              where: {
+                id:
+                  returnRequest.shipmentId,
+              },
+
+              data: {
+                status:
+                  shipmentStatus,
+              },
+            });
+
+            // ------------------------------------------------
+            // TRACKING
+            // ------------------------------------------------
+
+            await tx.tracking.create({
+              data: {
+                shipmentId:
+                  returnRequest.shipmentId,
+
+                status:
+                  trackingStatus,
+
+                location:
+                  String(location || "").trim() ||
+                  (
+                    status === "IN_WAREHOUSE"
+                      ? "Warehouse"
+                      : returnRequest
+                          .shipment
+                          .receiverAddress ||
+                        "Unknown"
+                  ),
+
+                message:
+                  trackingMessages[status] ||
+                  `Return status updated to ${status.replaceAll(
+                    "_",
+                    " "
+                  )}`,
+
+                createdBy:
+                  String(req.user?.id || ""),
+              },
+            });
+
+            // ------------------------------------------------
+            // NOTIFICATION
+            // ------------------------------------------------
+
+            await tx.notification.create({
+              data: {
+                shipmentId:
+                  returnRequest.shipmentId,
+
+                title:
+                  "Return Status Updated",
+
+                message:
+                  `Return for shipment ${returnRequest.shipment.trackingNumber} is now ${status.replaceAll(
+                    "_",
+                    " "
+                  )}.`,
+              },
+            });
+
+            return {
+              returnId:
+                updatedReturn.id,
+
+              shipmentId:
+                updatedReturn.shipmentId,
+
+              status:
+                updatedReturn.status,
+            };
+          },
+
+          {
+            timeout: 15000,
+            maxWait: 10000,
+          }
+        );
+
+      // ======================================================
+      // FINAL RETURN
+      // ======================================================
+
+      const finalReturn =
+        await prisma.returnRequest.findUnique({
+          where: {
+            id:
+              transactionResult.returnId,
+          },
+
+          include:
+            returnInclude,
+        });
+
+      if (!finalReturn) {
+        return res.status(404).json({
+          message:
+            "Return was updated but could not be loaded.",
+        });
+      }
+
+      return res.json({
+        message:
+          "Return status updated successfully.",
+
+        returnRequest:
+          finalReturn,
+      });
+    } catch (error) {
+      console.error(
+        "UPDATE RETURN STATUS ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        message:
+          "Failed to update return status.",
+
+        error:
+          error?.message ||
+          "Unknown server error",
+
+        code:
+          error?.code ||
+          null,
+      });
+    }
+  };
+
+// ============================================================
+// SELECT RETURN DELIVERY OPTION
+//
+// PATCH /api/returns/:id/delivery-option
+// ============================================================
+
+export const selectReturnDeliveryOption =
+  async (req, res) => {
+    try {
+      const role =
+        getUserRole(req);
+
+      const id =
+        String(req.params.id);
+
+      const {
+        deliveryOption,
+      } = req.body;
+
+      // ======================================================
+      // VENDOR ONLY
+      // ======================================================
+
+      if (role !== "VENDOR") {
+        return res.status(403).json({
+          message:
+            "Only vendors can select return delivery option.",
+        });
+      }
+
+      // ======================================================
+      // VALIDATE
+      // ======================================================
+
+      if (
+        ![
+          "VENDOR_PICKUP",
+          "DELIVER_TO_VENDOR",
+        ].includes(deliveryOption)
+      ) {
+        return res.status(400).json({
+          message:
+            "Invalid return delivery option.",
+        });
+      }
+
+      const vendorId =
+        await getVendorId(req);
+
+      if (!vendorId) {
+        return res.status(403).json({
+          message:
+            "Vendor account not found.",
+        });
+      }
+
+      // ======================================================
+      // FIND RETURN
+      // ======================================================
+
+      const returnRequest =
+        await prisma.returnRequest.findUnique({
+          where: {
+            id,
+          },
+
+          include: {
+            shipment: true,
+          },
+        });
+
+      if (!returnRequest) {
+        return res.status(404).json({
+          message:
+            "Return request not found.",
+        });
+      }
+
+      // ======================================================
+      // OWNER
+      // ======================================================
 
       if (
         returnRequest.shipment.vendorId !==
@@ -1536,13 +1562,13 @@ export const selectReturnDeliveryOption =
       ) {
         return res.status(403).json({
           message:
-            "You cannot select delivery option for this return",
+            "You cannot select delivery option for this return.",
         });
       }
 
-      // --------------------------------------------------------
-      // WAREHOUSE
-      // --------------------------------------------------------
+      // ======================================================
+      // STAGE
+      // ======================================================
 
       if (
         returnRequest.status !==
@@ -1554,13 +1580,12 @@ export const selectReturnDeliveryOption =
         });
       }
 
-      // --------------------------------------------------------
-      // ALREADY SELECTED
-      // --------------------------------------------------------
+      // ======================================================
+      // IMPORTANT:
+      // DO NOT SELECT TWICE
+      // ======================================================
 
-      if (
-        returnRequest.deliveryOption
-      ) {
+      if (returnRequest.deliveryOption) {
         return res.status(400).json({
           message:
             "Return delivery option has already been selected.",
@@ -1568,14 +1593,13 @@ export const selectReturnDeliveryOption =
       }
 
       const trackingMessage =
-        deliveryOption ===
-        "VENDOR_PICKUP"
-          ? "Vendor selected warehouse pickup for the returned package"
-          : "Vendor selected delivery to vendor address for the returned package";
+        deliveryOption === "VENDOR_PICKUP"
+          ? "Vendor selected warehouse pickup for the returned package."
+          : "Vendor selected delivery to vendor address for the returned package.";
 
-      // --------------------------------------------------------
+      // ======================================================
       // TRANSACTION
-      // --------------------------------------------------------
+      // ======================================================
 
       const transactionResult =
         await prisma.$transaction(
@@ -1583,7 +1607,7 @@ export const selectReturnDeliveryOption =
             const updatedReturn =
               await tx.returnRequest.update({
                 where: {
-                  id: String(id),
+                  id,
                 },
 
                 data: {
@@ -1597,6 +1621,10 @@ export const selectReturnDeliveryOption =
                   status: true,
                 },
               });
+
+            // ------------------------------------------------
+            // TRACKING
+            // ------------------------------------------------
 
             await tx.tracking.create({
               data: {
@@ -1620,6 +1648,10 @@ export const selectReturnDeliveryOption =
               },
             });
 
+            // ------------------------------------------------
+            // NOTIFICATION
+            // ------------------------------------------------
+
             await tx.notification.create({
               data: {
                 shipmentId:
@@ -1634,37 +1666,25 @@ export const selectReturnDeliveryOption =
                     "VENDOR_PICKUP"
                       ? "warehouse pickup"
                       : "delivery to vendor"
-                  } for return ${
-                    returnRequest
-                      .shipment
-                      .trackingNumber
-                  }`,
+                  } for return ${returnRequest.shipment.trackingNumber}.`,
               },
             });
 
             return {
               returnId:
                 updatedReturn.id,
-
-              shipmentId:
-                updatedReturn.shipmentId,
-
-              deliveryOption:
-                updatedReturn.deliveryOption,
-
-              status:
-                updatedReturn.status,
             };
           },
+
           {
             timeout: 15000,
             maxWait: 10000,
           }
         );
 
-      // --------------------------------------------------------
-      // FULL RETURN
-      // --------------------------------------------------------
+      // ======================================================
+      // FINAL RETURN
+      // ======================================================
 
       const finalReturn =
         await prisma.returnRequest.findUnique({
@@ -1680,40 +1700,403 @@ export const selectReturnDeliveryOption =
       if (!finalReturn) {
         return res.status(404).json({
           message:
-            "Delivery option was selected but return could not be loaded",
+            "Delivery option was selected but return could not be loaded.",
         });
       }
 
       return res.status(200).json({
         message:
-          "Return delivery option selected successfully",
+          "Return delivery option selected successfully.",
 
         returnRequest:
           finalReturn,
       });
     } catch (error) {
       console.error(
-        "\n========== SELECT RETURN DELIVERY OPTION ERROR =========="
+        "SELECT RETURN DELIVERY OPTION ERROR:",
+        error
       );
-
-      console.error(error);
 
       return res.status(500).json({
         message:
-          "Failed to select return delivery option",
+          "Failed to select return delivery option.",
 
         error:
           error?.message ||
           "Unknown server error",
 
         code:
-          error?.code || null,
+          error?.code ||
+          null,
       });
     }
   };
 
 // ============================================================
-// 9. VENDOR CANCEL RETURN
+// SET RETURN CHARGE
+//
+// PATCH /api/returns/:id/charge
+// ============================================================
+
+export const setReturnCharge =
+  async (req, res) => {
+    try {
+      const role =
+        getUserRole(req);
+
+      if (
+        role !== "ADMIN" &&
+        role !== "STAFF"
+      ) {
+        return res.status(403).json({
+          message:
+            "Only admin or staff can set return charges.",
+        });
+      }
+
+      const returnId =
+        String(req.params.id);
+
+      const {
+        returnChargeType,
+        returnChargePayer,
+        amount,
+      } = req.body;
+
+      // ======================================================
+      // VALIDATE TYPE
+      // ======================================================
+
+      if (
+        ![
+          "NO_CHARGE",
+          "CHARGE",
+        ].includes(returnChargeType)
+      ) {
+        return res.status(400).json({
+          message:
+            "Invalid return charge type.",
+        });
+      }
+
+      // ======================================================
+      // NO CHARGE
+      // ======================================================
+
+      if (
+        returnChargeType ===
+        "NO_CHARGE"
+      ) {
+        const result =
+          await prisma.$transaction(
+            async (tx) => {
+              const existing =
+                await tx.returnRequest.findUnique({
+                  where: {
+                    id:
+                      returnId,
+                  },
+
+                  include: {
+                    shipment: true,
+                  },
+                });
+
+              if (!existing) {
+                throw new Error(
+                  "Return request not found."
+                );
+              }
+
+              // Remove previous accounting.
+              await tx.accountingEntry.deleteMany({
+                where: {
+                  returnRequestId:
+                    returnId,
+
+                  type:
+                    "RETURN_CHARGE",
+                },
+              });
+
+              const updated =
+                await tx.returnRequest.update({
+                  where: {
+                    id:
+                      returnId,
+                  },
+
+                  data: {
+                    returnCharge:
+                      0,
+
+                    returnChargeType:
+                      "NO_CHARGE",
+
+                    returnChargePayer:
+                      null,
+
+                    chargeSetById:
+                      req.user?.id
+                        ? Number(req.user.id)
+                        : null,
+
+                    chargeSetAt:
+                      new Date(),
+                  },
+                });
+
+              return updated;
+            },
+
+            {
+              timeout: 15000,
+              maxWait: 10000,
+            }
+          );
+
+        return res.json({
+          message:
+            "Return charge removed successfully.",
+
+          returnRequest:
+            result,
+        });
+      }
+
+      // ======================================================
+      // CHARGE PAYER
+      // ======================================================
+
+      if (
+        ![
+          "CUSTOMER",
+          "VENDOR",
+          "COMPANY",
+        ].includes(returnChargePayer)
+      ) {
+        return res.status(400).json({
+          message:
+            "Return charge payer must be CUSTOMER, VENDOR, or COMPANY.",
+        });
+      }
+
+      // ======================================================
+      // AMOUNT
+      // ======================================================
+
+      const finalAmount =
+        Number(amount);
+
+      if (
+        !Number.isFinite(finalAmount) ||
+        finalAmount <= 0
+      ) {
+        return res.status(400).json({
+          message:
+            "Return charge amount must be greater than 0.",
+        });
+      }
+
+      // ======================================================
+      // RETURN
+      // ======================================================
+
+      const returnRequest =
+        await prisma.returnRequest.findUnique({
+          where: {
+            id:
+              returnId,
+          },
+
+          include: {
+            shipment: true,
+          },
+        });
+
+      if (!returnRequest) {
+        return res.status(404).json({
+          message:
+            "Return request not found.",
+        });
+      }
+
+      if (
+        !returnRequest.shipment.vendorId
+      ) {
+        return res.status(400).json({
+          message:
+            "Return shipment does not belong to a registered vendor.",
+        });
+      }
+
+      // ======================================================
+      // TRANSACTION
+      // ======================================================
+
+      const result =
+        await prisma.$transaction(
+          async (tx) => {
+            const updated =
+              await tx.returnRequest.update({
+                where: {
+                  id:
+                    returnId,
+                },
+
+                data: {
+                  returnCharge:
+                    finalAmount,
+
+                  returnChargeType:
+                    "CHARGE",
+
+                  returnChargePayer:
+                    returnChargePayer,
+
+                  chargeSetById:
+                    req.user?.id
+                      ? Number(req.user.id)
+                      : null,
+
+                  chargeSetAt:
+                    new Date(),
+                },
+              });
+
+            // Remove old charge entry first.
+            await tx.accountingEntry.deleteMany({
+              where: {
+                returnRequestId:
+                  returnId,
+
+                type:
+                  "RETURN_CHARGE",
+              },
+            });
+
+            // COMPANY does not debit vendor.
+            if (
+              returnChargePayer !==
+              "COMPANY"
+            ) {
+              await tx.accountingEntry.create({
+                data: {
+                  vendorId:
+                    returnRequest.shipment.vendorId,
+
+                  returnRequestId:
+                    returnId,
+
+                  shipmentId:
+                    returnRequest.shipmentId,
+
+                  type:
+                    "RETURN_CHARGE",
+
+                  direction:
+                    "DEBIT",
+
+                  amount:
+                    finalAmount,
+
+                  description:
+                    `Return charge (${returnChargePayer}) for shipment ${returnRequest.shipment.trackingNumber}`,
+                },
+              });
+            }
+
+            // Tracking
+            await tx.tracking.create({
+              data: {
+                shipmentId:
+                  returnRequest.shipmentId,
+
+                status:
+                  "RETURN_REQUESTED",
+
+                location:
+                  "Admin Office",
+
+                message:
+                  `Return charge set to Rs. ${finalAmount} and paid by ${returnChargePayer}.`,
+
+                createdBy:
+                  String(
+                    req.user?.id || ""
+                  ),
+              },
+            });
+
+            // Notification
+            await tx.notification.create({
+              data: {
+                shipmentId:
+                  returnRequest.shipmentId,
+
+                title:
+                  "Return Charge Updated",
+
+                message:
+                  `Return charge for ${returnRequest.shipment.trackingNumber} is Rs. ${finalAmount}.`,
+              },
+            });
+
+            return updated;
+          },
+
+          {
+            timeout: 15000,
+            maxWait: 10000,
+          }
+        );
+
+      // ======================================================
+      // FINAL RETURN
+      // ======================================================
+
+      const finalReturn =
+        await prisma.returnRequest.findUnique({
+          where: {
+            id:
+              result.id,
+          },
+
+          include:
+            returnInclude,
+        });
+
+      return res.json({
+        message:
+          "Return charge updated successfully.",
+
+        returnRequest:
+          finalReturn,
+      });
+    } catch (error) {
+      console.error(
+        "SET RETURN CHARGE ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        message:
+          "Failed to set return charge.",
+
+        error:
+          error?.message ||
+          "Unknown server error",
+
+        code:
+          error?.code ||
+          null,
+      });
+    }
+  };
+
+// ============================================================
+// CANCEL RETURN
+//
 // PATCH /api/returns/:id/cancel
 // ============================================================
 
@@ -1726,7 +2109,7 @@ export const cancelReturn =
       if (role !== "VENDOR") {
         return res.status(403).json({
           message:
-            "Only vendors can cancel returns",
+            "Only vendors can cancel returns.",
         });
       }
 
@@ -1736,7 +2119,7 @@ export const cancelReturn =
       if (!vendorId) {
         return res.status(403).json({
           message:
-            "Vendor account not found",
+            "Vendor account not found.",
         });
       }
 
@@ -1746,7 +2129,8 @@ export const cancelReturn =
       const returnRequest =
         await prisma.returnRequest.findUnique({
           where: {
-            id: returnId,
+            id:
+              returnId,
           },
 
           include: {
@@ -1757,7 +2141,7 @@ export const cancelReturn =
       if (!returnRequest) {
         return res.status(404).json({
           message:
-            "Return request not found",
+            "Return request not found.",
         });
       }
 
@@ -1767,7 +2151,7 @@ export const cancelReturn =
       ) {
         return res.status(403).json({
           message:
-            "You cannot cancel this return",
+            "You cannot cancel this return.",
         });
       }
 
@@ -1779,7 +2163,7 @@ export const cancelReturn =
       ) {
         return res.status(400).json({
           message:
-            "Return can no longer be cancelled",
+            "Return can no longer be cancelled.",
         });
       }
 
@@ -1789,7 +2173,8 @@ export const cancelReturn =
             const updated =
               await tx.returnRequest.update({
                 where: {
-                  id: returnId,
+                  id:
+                    returnId,
                 },
 
                 data: {
@@ -1825,12 +2210,13 @@ export const cancelReturn =
                   "Unknown",
 
                 message:
-                  "Return request cancelled by vendor",
+                  "Return request cancelled by vendor.",
 
-                createdBy: String(
-                  req.user?.id ||
+                createdBy:
+                  String(
+                    req.user?.id ||
                     vendorId
-                ),
+                  ),
               },
             });
 
@@ -1843,20 +2229,27 @@ export const cancelReturn =
                   "Return Cancelled",
 
                 message:
-                  `Return request for ${returnRequest.shipment.trackingNumber} was cancelled`,
+                  `Return request for ${returnRequest.shipment.trackingNumber} was cancelled.`,
               },
             });
 
             return {
-              id: updated.id,
+              id:
+                updated.id,
             };
+          },
+
+          {
+            timeout: 15000,
+            maxWait: 10000,
           }
         );
 
       const finalReturn =
         await prisma.returnRequest.findUnique({
           where: {
-            id: result.id,
+            id:
+              result.id,
           },
 
           include:
@@ -1865,7 +2258,7 @@ export const cancelReturn =
 
       return res.json({
         message:
-          "Return cancelled successfully",
+          "Return cancelled successfully.",
 
         returnRequest:
           finalReturn,
@@ -1878,10 +2271,10 @@ export const cancelReturn =
 
       return res.status(500).json({
         message:
-          "Failed to cancel return",
+          "Failed to cancel return.",
 
         error:
-          error.message,
+          error?.message,
       });
     }
   };

@@ -87,7 +87,6 @@ export const authenticate = async (req, res, next) => {
     next();
 
   } catch (error) {
-
     console.error(
       "AUTH MIDDLEWARE ERROR:",
       error
@@ -98,4 +97,3 @@ export const authenticate = async (req, res, next) => {
     });
   }
 };
-

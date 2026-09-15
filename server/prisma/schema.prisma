@@ -19,7 +19,23 @@ enum Role {
 }
 
 // ======================================================
-// RETURN ENUMS
+// SETTLEMENT
+// ======================================================
+
+enum SettlementDirection {
+  PAY_VENDOR
+  COLLECT_FROM_VENDOR
+}
+
+enum SettlementStatus {
+  PENDING
+  PROCESSING
+  PAID
+  CANCELLED
+}
+
+// ======================================================
+// RETURN
 // ======================================================
 
 enum ReturnStatus {
@@ -48,8 +64,19 @@ enum ReturnDeliveryOption {
   DELIVER_TO_VENDOR
 }
 
+enum ReturnChargeType {
+  NO_CHARGE
+  CHARGE
+}
+
+enum ReturnChargePayer {
+  CUSTOMER
+  VENDOR
+  COMPANY
+}
+
 // ======================================================
-// PICKUP ENUMS
+// PICKUP
 // ======================================================
 
 enum PickupStatus {
@@ -60,7 +87,7 @@ enum PickupStatus {
 }
 
 // ======================================================
-// SHIPMENT ENUMS
+// SHIPMENT
 // ======================================================
 
 enum ShipmentOrigin {
@@ -107,20 +134,55 @@ enum PaymentType {
 }
 
 // ======================================================
+// COD
+// ======================================================
+
+enum CodCollectionStatus {
+  PENDING
+  COLLECTED
+  FAILED
+  CANCELLED
+}
+
+// ======================================================
+// ACCOUNTING
+// ======================================================
+
+enum AccountingEntryType {
+  COD_COLLECTION
+  SHIPPING_CHARGE
+  RETURN_CHARGE
+  PICKUP_CHARGE
+  STORAGE_CHARGE
+  OTHER_CHARGE
+  REFUND
+  VENDOR_SETTLEMENT
+}
+
+enum AccountingDirection {
+  CREDIT
+  DEBIT
+}
+
+// ======================================================
 // USER
 // ======================================================
 
 model User {
-  id       Int     @id @default(autoincrement())
-  name     String
-  email    String  @unique
+  id Int @id @default(autoincrement())
+
+  name String
+  email String @unique
   password String
-  role     Role
+
+  role Role
   isActive Boolean @default(true)
 
   vendor Vendor?
-  rider  Rider?
-  staff  Staff?
+  rider Rider?
+  staff Staff?
+
+  returnChargesSet ReturnRequest[] @relation("ReturnChargeSetBy")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -134,14 +196,17 @@ model Vendor {
   id Int @id @default(autoincrement())
 
   companyName String
-  contactId   String
-  location    String
+  contactId String
+  location String
 
-  userId Int  @unique
-  user   User @relation(fields: [userId], references: [id])
+  userId Int @unique
+  user User @relation(fields: [userId], references: [id])
 
   shipments Shipment[]
-  pickups   Pickup[]
+  pickups Pickup[]
+
+  accountingEntries AccountingEntry[]
+  settlements VendorSettlement[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -154,11 +219,11 @@ model Vendor {
 model Staff {
   id Int @id @default(autoincrement())
 
-  phone          String
+  phone String
   profilePicture String?
 
-  userId Int  @unique
-  user   User @relation(fields: [userId], references: [id])
+  userId Int @unique
+  user User @relation(fields: [userId], references: [id])
 
   createdShipments Shipment[] @relation("CreatedByStaff")
 
@@ -173,31 +238,28 @@ model Staff {
 model Rider {
   id Int @id @default(autoincrement())
 
-  phone          String
+  phone String
   profilePicture String?
 
-  latitude  Float?
+  latitude Float?
   longitude Float?
 
   isAvailable Boolean @default(true)
 
-  userId Int  @unique
-  user   User @relation(fields: [userId], references: [id])
+  userId Int @unique
+  user User @relation(fields: [userId], references: [id])
 
-  // Normal shipment delivery
   shipments Shipment[]
 
-  // Rider GPS locations
   locations RiderLocation[]
 
-  // Pickup assignments
   pickups Pickup[]
 
-  // Return pickup rider
   returnPickupRequests ReturnRequest[] @relation("ReturnPickupRider")
 
-  // Return delivery rider
   returnDeliveryRequests ReturnRequest[] @relation("ReturnDeliveryRider")
+
+  codCollections CodCollection[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -213,17 +275,17 @@ model Pickup {
   totalPackages Int
 
   pickupAddress String
-  pickupPhone   String
+  pickupPhone String
 
   status PickupStatus @default(REQUESTED)
 
   notes String?
 
   vendorId Int
-  vendor   Vendor @relation(fields: [vendorId], references: [id])
+  vendor Vendor @relation(fields: [vendorId], references: [id])
 
   riderId Int?
-  rider   Rider? @relation(fields: [riderId], references: [id])
+  rider Rider? @relation(fields: [riderId], references: [id])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -273,12 +335,12 @@ model LocationRate {
   id Int @id @default(autoincrement())
 
   locationId Int
-  location   Location @relation(fields: [locationId], references: [id])
+  location Location @relation(fields: [locationId], references: [id])
 
   deliveryTypeId Int
-  deliveryType   DeliveryType @relation(fields: [deliveryTypeId], references: [id])
+  deliveryType DeliveryType @relation(fields: [deliveryTypeId], references: [id])
 
-  price Float
+  price Decimal @db.Decimal(12, 2)
 
   shipments Shipment[]
 
@@ -311,7 +373,7 @@ model Warehouse {
 model Carrier {
   id Int @id @default(autoincrement())
 
-  name  String
+  name String
   phone String?
 
   shipments Shipment[]
@@ -329,21 +391,24 @@ model Shipment {
 
   trackingNumber String @unique
 
-  receiverName    String
-  receiverPhone   String
+  senderName String
+  senderPhone String
+  senderAddress String
+
+  receiverName String
+  receiverPhone String
   receiverAddress String
 
   packageType PackageType
-
   weight Float
 
   paymentType PaymentType @default(PREPAID)
-  codAmount   Float       @default(0)
 
-  shippingCharge Float
+  codAmount Decimal @default(0) @db.Decimal(12, 2)
+
+  shippingCharge Decimal @db.Decimal(12, 2)
 
   notes String?
-
   qrCode String?
 
   origin ShipmentOrigin
@@ -352,37 +417,32 @@ model Shipment {
 
   status ShipmentStatus @default(CREATED)
 
-  // Vendor
   vendorId Int?
-  vendor   Vendor? @relation(fields: [vendorId], references: [id])
+  vendor Vendor? @relation(fields: [vendorId], references: [id])
 
-  // Staff who created shipment
   createdByStaffId Int?
-  createdByStaff   Staff? @relation("CreatedByStaff", fields: [createdByStaffId], references: [id])
+  createdByStaff Staff? @relation("CreatedByStaff", fields: [createdByStaffId], references: [id])
 
-  // Normal delivery rider
   riderId Int?
-  rider   Rider? @relation(fields: [riderId], references: [id])
+  rider Rider? @relation(fields: [riderId], references: [id])
 
-  // Warehouse
   warehouseId Int?
-  warehouse   Warehouse? @relation(fields: [warehouseId], references: [id])
+  warehouse Warehouse? @relation(fields: [warehouseId], references: [id])
 
-  // Carrier
   carrierId Int?
-  carrier   Carrier? @relation(fields: [carrierId], references: [id])
+  carrier Carrier? @relation(fields: [carrierId], references: [id])
 
-  // Location / delivery rate
   locationRateId Int
-  locationRate   LocationRate @relation(fields: [locationRateId], references: [id])
+  locationRate LocationRate @relation(fields: [locationRateId], references: [id])
 
-  // Tracking history
   trackings Tracking[]
 
-  // Return request
   returnRequest ReturnRequest?
 
-  // Notifications
+  codCollection CodCollection?
+
+  accountingEntries AccountingEntry[]
+
   notifications Notification[]
 
   createdAt DateTime @default(now())
@@ -393,6 +453,8 @@ model Shipment {
   @@index([riderId])
   @@index([warehouseId])
   @@index([carrierId])
+  @@index([locationRateId])
+  @@index([trackingNumber])
 }
 
 // ======================================================
@@ -402,43 +464,32 @@ model Shipment {
 model ReturnRequest {
   id String @id @default(cuid())
 
-  // One return request per shipment
-  shipmentId String   @unique
-  shipment   Shipment @relation(fields: [shipmentId], references: [id])
+  shipmentId String @unique
+  shipment Shipment @relation(fields: [shipmentId], references: [id])
 
   status ReturnStatus @default(REQUESTED)
 
-  reason      ReturnReason
+  reason ReturnReason
   description String?
 
-  // ====================================================
-  // ORIGINAL RIDER
-  // Customer -> Warehouse
-  // ====================================================
-
   riderId Int?
-  rider   Rider? @relation("ReturnPickupRider", fields: [riderId], references: [id])
-
-  // ====================================================
-  // RETURN DELIVERY RIDER
-  // Warehouse -> Vendor
-  // ====================================================
+  rider Rider? @relation("ReturnPickupRider", fields: [riderId], references: [id])
 
   returnDeliveryRiderId Int?
-  returnDeliveryRider   Rider? @relation("ReturnDeliveryRider", fields: [returnDeliveryRiderId], references: [id])
-
-  // ====================================================
-  // DELIVERY OPTION
-  // ====================================================
+  returnDeliveryRider Rider? @relation("ReturnDeliveryRider", fields: [returnDeliveryRiderId], references: [id])
 
   deliveryOption ReturnDeliveryOption?
 
-  // Return charge
-  returnCharge Float @default(0)
+  returnChargeType ReturnChargeType?
 
-  // ====================================================
-  // TIMESTAMPS
-  // ====================================================
+  returnChargePayer ReturnChargePayer?
+
+  returnCharge Decimal @default(0) @db.Decimal(12, 2)
+
+  chargeSetById Int?
+  chargeSetBy User? @relation("ReturnChargeSetBy", fields: [chargeSetById], references: [id])
+
+  chargeSetAt DateTime?
 
   requestedAt DateTime @default(now())
 
@@ -448,17 +499,146 @@ model ReturnRequest {
 
   notes String?
 
+  accountingEntries AccountingEntry[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-
-  // ====================================================
-  // INDEXES
-  // ====================================================
 
   @@index([status])
   @@index([riderId])
   @@index([returnDeliveryRiderId])
   @@index([deliveryOption])
+  @@index([returnChargeType])
+  @@index([returnChargePayer])
+}
+
+// ======================================================
+// COD COLLECTION
+// ======================================================
+
+model CodCollection {
+  id String @id @default(cuid())
+
+  shipmentId String @unique
+  shipment Shipment @relation(fields: [shipmentId], references: [id])
+
+  riderId Int?
+  rider Rider? @relation(fields: [riderId], references: [id])
+
+  amount Decimal @db.Decimal(12, 2)
+
+  status CodCollectionStatus @default(PENDING)
+
+  collectedAt DateTime?
+
+  notes String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([riderId])
+}
+
+// ======================================================
+// ACCOUNTING ENTRY
+// ======================================================
+
+model AccountingEntry {
+  id String @id @default(cuid())
+
+  vendorId Int
+  vendor Vendor @relation(fields: [vendorId], references: [id])
+
+  shipmentId String?
+  shipment Shipment? @relation(fields: [shipmentId], references: [id])
+
+  returnRequestId String?
+  returnRequest ReturnRequest? @relation(fields: [returnRequestId], references: [id])
+
+  type AccountingEntryType
+
+  direction AccountingDirection
+
+  amount Decimal @db.Decimal(12, 2)
+
+  description String?
+
+  settlementItems SettlementItem[]
+
+  createdAt DateTime @default(now())
+
+  @@index([vendorId])
+  @@index([shipmentId])
+  @@index([returnRequestId])
+  @@index([type])
+  @@index([direction])
+}
+
+// ======================================================
+// VENDOR SETTLEMENT
+// ======================================================
+
+model VendorSettlement {
+  id String @id @default(cuid())
+
+  vendorId Int
+  vendor Vendor @relation(fields: [vendorId], references: [id])
+
+  totalCodAmount Decimal @default(0) @db.Decimal(12, 2)
+
+  totalShippingCharge Decimal @default(0) @db.Decimal(12, 2)
+
+  totalReturnCharge Decimal @default(0) @db.Decimal(12, 2)
+
+  totalOtherCharges Decimal @default(0) @db.Decimal(12, 2)
+
+  totalCredits Decimal @default(0) @db.Decimal(12, 2)
+
+  totalDebits Decimal @default(0) @db.Decimal(12, 2)
+
+  netPayable Decimal @default(0) @db.Decimal(12, 2)
+
+  direction SettlementDirection
+
+  status SettlementStatus @default(PENDING)
+
+  paidAt DateTime?
+
+  paymentReference String?
+
+  notes String?
+
+  items SettlementItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([vendorId])
+  @@index([status])
+  @@index([direction])
+}
+
+// ======================================================
+// SETTLEMENT ITEM
+// ======================================================
+
+model SettlementItem {
+  id String @id @default(cuid())
+
+  settlementId String
+  settlement VendorSettlement @relation(fields: [settlementId], references: [id], onDelete: Cascade)
+
+  accountingEntryId String
+  accountingEntry AccountingEntry @relation(fields: [accountingEntryId], references: [id])
+
+  amount Decimal @db.Decimal(12, 2)
+
+  createdAt DateTime @default(now())
+
+  @@unique([settlementId, accountingEntryId])
+  @@index([accountingEntryId])
+  @@index([settlementId])
 }
 
 // ======================================================
@@ -469,7 +649,7 @@ model Tracking {
   id String @id @default(cuid())
 
   shipmentId String
-  shipment   Shipment @relation(fields: [shipmentId], references: [id])
+  shipment Shipment @relation(fields: [shipmentId], references: [id])
 
   status ShipmentStatus
 
@@ -482,6 +662,7 @@ model Tracking {
   createdAt DateTime @default(now())
 
   @@index([shipmentId])
+  @@index([status])
 }
 
 // ======================================================
@@ -492,9 +673,9 @@ model RiderLocation {
   id Int @id @default(autoincrement())
 
   riderId Int
-  rider   Rider @relation(fields: [riderId], references: [id])
+  rider Rider @relation(fields: [riderId], references: [id])
 
-  latitude  Float
+  latitude Float
   longitude Float
 
   createdAt DateTime @default(now())
@@ -510,9 +691,9 @@ model Notification {
   id Int @id @default(autoincrement())
 
   shipmentId String
-  shipment   Shipment @relation(fields: [shipmentId], references: [id])
+  shipment Shipment @relation(fields: [shipmentId], references: [id])
 
-  title   String
+  title String
   message String
 
   isRead Boolean @default(false)
@@ -520,4 +701,5 @@ model Notification {
   createdAt DateTime @default(now())
 
   @@index([shipmentId])
+  @@index([isRead])
 }
