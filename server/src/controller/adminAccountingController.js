@@ -10,26 +10,54 @@ const toNumber = (value) => {
     return 0;
   }
 
-  return Number(value);
+  const number = Number(value);
+
+  return Number.isFinite(number) ? number : 0;
 };
 
 const money = (value) => {
-  return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
-};
+  const number = Number(value);
 
-const allocatedOf = (entry) => {
-  if (!entry.settlementItems) {
+  if (!Number.isFinite(number)) {
     return 0;
   }
 
-  return entry.settlementItems.reduce(
-    (sum, item) => sum + toNumber(item.amount),
-    0
+  return Math.round((number + Number.EPSILON) * 100) / 100;
+};
+
+/**
+ * Only allocations from ACTIVE settlements count.
+ *
+ * PAID       -> allocation remains consumed
+ * PROCESSING -> allocation remains consumed
+ * PENDING    -> allocation remains consumed
+ * CANCELLED  -> allocation is released
+ */
+const allocatedOf = (entry) => {
+  if (!entry?.settlementItems?.length) {
+    return 0;
+  }
+
+  return money(
+    entry.settlementItems.reduce((sum, item) => {
+      const status = item.settlement?.status;
+
+      if (status === "CANCELLED") {
+        return sum;
+      }
+
+      return sum + toNumber(item.amount);
+    }, 0)
   );
 };
 
 const remainingOf = (entry) => {
-  return money(toNumber(entry.amount) - allocatedOf(entry));
+  return money(
+    Math.max(
+      0,
+      toNumber(entry.amount) - allocatedOf(entry)
+    )
+  );
 };
 
 const getPagination = (query) => {
@@ -54,6 +82,18 @@ const buildPagination = (page, limit, total) => ({
   totalPages: Math.max(1, Math.ceil(total / limit)),
 });
 
+/**
+ * Settlement audit entries are NOT operational vendor
+ * credits/debits.
+ *
+ * They are kept only for historical compatibility.
+ */
+const operationalEntryWhere = {
+  type: {
+    not: "VENDOR_SETTLEMENT",
+  },
+};
+
 // ======================================================
 // VALIDATION
 // ======================================================
@@ -61,29 +101,66 @@ const buildPagination = (page, limit, total) => ({
 const settlementItemSchema = z.object({
   accountingEntryId: z.string().min(1),
 
-  amount: z.number().positive().finite(),
+  amount: z
+    .number()
+    .positive()
+    .finite(),
 });
 
-// items is OPTIONAL now.
-// The admin UI creates a settlement with { vendorId, notes } only,
-// in which case every unsettled entry of the vendor is used.
 const createSettlementSchema = z.object({
-  vendorId: z.number().int().positive(),
+  vendorId: z
+    .number()
+    .int()
+    .positive(),
 
-  items: z.array(settlementItemSchema).min(1).optional(),
+  items: z
+    .array(settlementItemSchema)
+    .min(1)
+    .optional(),
 
-  notes: z.string().nullish(),
+  notes: z
+    .string()
+    .nullish(),
 });
 
 const processSettlementSchema = z.object({
-  notes: z.string().nullish(),
+  notes: z
+    .string()
+    .nullish(),
 });
 
 const paySettlementSchema = z.object({
-  paymentReference: z.string().nullish(),
+  paymentReference: z
+    .string()
+    .nullish(),
 
-  notes: z.string().nullish(),
+  notes: z
+    .string()
+    .nullish(),
 });
+
+// ======================================================
+// ACCOUNTING ENTRY INCLUDE
+// ======================================================
+
+const settlementAllocationInclude = {
+  settlementItems: {
+    select: {
+      id: true,
+      amount: true,
+      settlementId: true,
+
+      settlement: {
+        select: {
+          id: true,
+          status: true,
+          direction: true,
+          netPayable: true,
+        },
+      },
+    },
+  },
+};
 
 // ======================================================
 // GET ACCOUNTING DASHBOARD
@@ -102,84 +179,346 @@ export const getAccountingDashboard = async (req, res) => {
       paidSettlements,
       totalVendors,
       vendorsWithOpenSettlement,
+      operationalEntries,
     ] = await Promise.all([
-      prisma.accountingEntry.aggregate({
-        where: { direction: "CREDIT" },
-        _sum: { amount: true },
-      }),
+      // ================================================
+      // TOTAL CREDITS
+      // EXCLUDE VENDOR_SETTLEMENT
+      // ================================================
 
       prisma.accountingEntry.aggregate({
-        where: { direction: "DEBIT" },
-        _sum: { amount: true },
+        where: {
+          direction: "CREDIT",
+
+          type: {
+            not: "VENDOR_SETTLEMENT",
+          },
+        },
+
+        _sum: {
+          amount: true,
+        },
       }),
+
+      // ================================================
+      // TOTAL CHARGES
+      // EXCLUDE VENDOR_SETTLEMENT
+      // ================================================
+
+      prisma.accountingEntry.aggregate({
+        where: {
+          direction: "DEBIT",
+
+          type: {
+            not: "VENDOR_SETTLEMENT",
+          },
+        },
+
+        _sum: {
+          amount: true,
+        },
+      }),
+
+      // ================================================
+      // PENDING COD
+      // ================================================
 
       prisma.codCollection.aggregate({
-        where: { status: "PENDING" },
-        _sum: { amount: true },
+        where: {
+          status: "PENDING",
+        },
+
+        _sum: {
+          amount: true,
+        },
       }),
+
+      // ================================================
+      // COLLECTED COD
+      // ================================================
 
       prisma.codCollection.aggregate({
-        where: { status: "COLLECTED" },
-        _sum: { amount: true },
+        where: {
+          status: "COLLECTED",
+        },
+
+        _sum: {
+          amount: true,
+        },
       }),
 
-      prisma.vendorSettlement.aggregate({
-        where: { status: "PENDING" },
-        _sum: { netPayable: true },
-      }),
+      // ================================================
+      // PENDING SETTLEMENTS
+      // ================================================
 
       prisma.vendorSettlement.aggregate({
-        where: { status: "PROCESSING" },
-        _sum: { netPayable: true },
+        where: {
+          status: "PENDING",
+        },
+
+        _sum: {
+          netPayable: true,
+        },
       }),
 
+      // ================================================
+      // PROCESSING SETTLEMENTS
+      // ================================================
+
       prisma.vendorSettlement.aggregate({
-        where: { status: "PAID" },
-        _sum: { netPayable: true },
+        where: {
+          status: "PROCESSING",
+        },
+
+        _sum: {
+          netPayable: true,
+        },
       }),
+
+      // ================================================
+      // PAID SETTLEMENTS
+      // ================================================
+
+      prisma.vendorSettlement.aggregate({
+        where: {
+          status: "PAID",
+        },
+
+        _sum: {
+          netPayable: true,
+        },
+      }),
+
+      // ================================================
+      // TOTAL VENDORS
+      // ================================================
 
       prisma.vendor.count(),
 
+      // ================================================
+      // VENDORS WITH OPEN SETTLEMENT
+      // ================================================
+
       prisma.vendorSettlement.findMany({
         where: {
-          status: { in: ["PENDING", "PROCESSING"] },
+          status: {
+            in: [
+              "PENDING",
+              "PROCESSING",
+            ],
+          },
         },
-        select: { vendorId: true },
+
+        select: {
+          vendorId: true,
+        },
+
         distinct: ["vendorId"],
+      }),
+
+      // ================================================
+      // OPERATIONAL ENTRIES
+      //
+      // Used for actual company earnings.
+      // ================================================
+
+      prisma.accountingEntry.findMany({
+        where: {
+          type: {
+            in: [
+              "SHIPPING_CHARGE",
+              "RETURN_CHARGE",
+              "PICKUP_CHARGE",
+              "STORAGE_CHARGE",
+              "OTHER_CHARGE",
+              "REFUND",
+            ],
+          },
+        },
+
+        select: {
+          type: true,
+          direction: true,
+          amount: true,
+        },
       }),
     ]);
 
-    const totalCredits = money(toNumber(credits._sum.amount));
+    // ==================================================
+    // TOTALS
+    // ==================================================
 
-    const totalDebits = money(toNumber(debits._sum.amount));
+    const totalCredits = money(
+      toNumber(credits._sum.amount)
+    );
+
+    const totalDebits = money(
+      toNumber(debits._sum.amount)
+    );
+
+    // ==================================================
+    // COMPANY EARNINGS
+    //
+    // Charges are revenue.
+    // Refunds represented as CREDIT reduce revenue.
+    // ==================================================
+
+    let companyEarnings = 0;
+
+    for (const entry of operationalEntries) {
+      const amount = toNumber(entry.amount);
+
+      if (
+        entry.type === "REFUND" &&
+        entry.direction === "CREDIT"
+      ) {
+        companyEarnings -= amount;
+        continue;
+      }
+
+      if (entry.direction === "DEBIT") {
+        companyEarnings += amount;
+      }
+    }
+
+    companyEarnings = money(companyEarnings);
+
+    // ==================================================
+    // SETTLEMENT TOTALS
+    // ==================================================
 
     const pending = money(
-      toNumber(pendingSettlements._sum.netPayable)
+      toNumber(
+        pendingSettlements._sum.netPayable
+      )
     );
 
     const processing = money(
-      toNumber(processingSettlements._sum.netPayable)
+      toNumber(
+        processingSettlements._sum.netPayable
+      )
     );
 
     const paid = money(
-      toNumber(paidSettlements._sum.netPayable)
+      toNumber(
+        paidSettlements._sum.netPayable
+      )
     );
 
-    res.json({
+    // ==================================================
+    // CURRENT OUTSTANDING
+    //
+    // IMPORTANT:
+    // Raw historical credit/debit totals are NOT the
+    // same as current vendor payable.
+    //
+    // Calculate outstanding from unallocated entries.
+    // ==================================================
+
+    const vendorEntries =
+      await prisma.accountingEntry.findMany({
+        where: operationalEntryWhere,
+
+        select: {
+          amount: true,
+          direction: true,
+
+          settlementItems: {
+            select: {
+              amount: true,
+
+              settlement: {
+                select: {
+                  status: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+    let outstandingCredits = 0;
+    let outstandingDebits = 0;
+
+    for (const entry of vendorEntries) {
+      const allocated =
+        entry.settlementItems.reduce(
+          (sum, item) => {
+            if (
+              item.settlement?.status ===
+              "CANCELLED"
+            ) {
+              return sum;
+            }
+
+            return (
+              sum +
+              toNumber(item.amount)
+            );
+          },
+          0
+        );
+
+      const remaining = money(
+        Math.max(
+          0,
+          toNumber(entry.amount) -
+            allocated
+        )
+      );
+
+      if (entry.direction === "CREDIT") {
+        outstandingCredits += remaining;
+      } else {
+        outstandingDebits += remaining;
+      }
+    }
+
+    outstandingCredits = money(
+      outstandingCredits
+    );
+
+    outstandingDebits = money(
+      outstandingDebits
+    );
+
+    const outstandingVendorBalance = money(
+      outstandingCredits -
+        outstandingDebits
+    );
+
+    // ==================================================
+    // RESPONSE
+    // ==================================================
+
+    return res.json({
       success: true,
 
       data: {
+        // Historical operational ledger totals
         totalCredits,
 
         totalDebits,
 
-        netBalance: money(totalCredits - totalDebits),
+        // Current unsettled vendor amount
+        netBalance:
+          outstandingVendorBalance,
+
+        outstandingVendorBalance,
+
+        companyEarnings,
 
         cod: {
-          pending: money(toNumber(pendingCod._sum.amount)),
+          pending: money(
+            toNumber(
+              pendingCod._sum.amount
+            )
+          ),
 
           collected: money(
-            toNumber(collectedCod._sum.amount)
+            toNumber(
+              collectedCod._sum.amount
+            )
           ),
         },
 
@@ -190,7 +529,9 @@ export const getAccountingDashboard = async (req, res) => {
 
           paid,
 
-          totalOutstanding: money(pending + processing),
+          totalOutstanding: money(
+            pending + processing
+          ),
         },
 
         vendors: {
@@ -202,11 +543,15 @@ export const getAccountingDashboard = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("getAccountingDashboard:", error);
+    console.error(
+      "getAccountingDashboard:",
+      error
+    );
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: "Failed to load accounting dashboard",
+      message:
+        "Failed to load accounting dashboard",
     });
   }
 };
@@ -216,7 +561,10 @@ export const getAccountingDashboard = async (req, res) => {
 // GET /api/admin/accounting/entries
 // ======================================================
 
-export const getAccountingEntries = async (req, res) => {
+export const getAccountingEntries = async (
+  req,
+  res
+) => {
   try {
     const {
       vendorId,
@@ -227,12 +575,20 @@ export const getAccountingEntries = async (req, res) => {
       search,
     } = req.query;
 
-    const { page, limit, skip } = getPagination(req.query);
+    const {
+      page,
+      limit,
+      skip,
+    } = getPagination(req.query);
 
     const where = {};
 
     if (vendorId) {
-      where.vendorId = Number(vendorId);
+      const id = Number(vendorId);
+
+      if (!Number.isNaN(id)) {
+        where.vendorId = id;
+      }
     }
 
     if (shipmentId) {
@@ -240,7 +596,8 @@ export const getAccountingEntries = async (req, res) => {
     }
 
     if (returnRequestId) {
-      where.returnRequestId = returnRequestId;
+      where.returnRequestId =
+        returnRequestId;
     }
 
     if (type) {
@@ -289,7 +646,10 @@ export const getAccountingEntries = async (req, res) => {
       ];
     }
 
-    const [entries, total] = await Promise.all([
+    const [
+      entries,
+      total,
+    ] = await Promise.all([
       prisma.accountingEntry.findMany({
         where,
 
@@ -327,32 +687,21 @@ export const getAccountingEntries = async (req, res) => {
             },
           },
 
-          settlementItems: {
-            select: {
-              id: true,
-              amount: true,
-              settlementId: true,
-
-              settlement: {
-                select: {
-                  id: true,
-                  status: true,
-                  direction: true,
-                  netPayable: true,
-                },
-              },
-            },
-          },
+          ...settlementAllocationInclude,
         },
 
-        orderBy: { createdAt: "desc" },
+        orderBy: {
+          createdAt: "desc",
+        },
 
         skip,
 
         take: limit,
       }),
 
-      prisma.accountingEntry.count({ where }),
+      prisma.accountingEntry.count({
+        where,
+      }),
     ]);
 
     const data = entries.map((entry) => {
@@ -377,15 +726,16 @@ export const getAccountingEntries = async (req, res) => {
             }
           : null,
 
-        returnRequest: entry.returnRequest
-          ? {
-              ...entry.returnRequest,
+        returnRequest:
+          entry.returnRequest
+            ? {
+                ...entry.returnRequest,
 
-              returnCharge: toNumber(
-                entry.returnRequest.returnCharge
-              ),
-            }
-          : null,
+                returnCharge: toNumber(
+                  entry.returnRequest.returnCharge
+                ),
+              }
+            : null,
 
         type: entry.type,
 
@@ -393,31 +743,46 @@ export const getAccountingEntries = async (req, res) => {
 
         amount: toNumber(entry.amount),
 
-        settlementAllocated: money(allocated),
+        settlementAllocated:
+          money(allocated),
 
         remainingAmount: money(
-          toNumber(entry.amount) - allocated
+          Math.max(
+            0,
+            toNumber(entry.amount) -
+              allocated
+          )
         ),
 
-        description: entry.description,
+        description:
+          entry.description,
 
-        createdAt: entry.createdAt,
+        createdAt:
+          entry.createdAt,
       };
     });
 
-    res.json({
+    return res.json({
       success: true,
 
       data,
 
-      pagination: buildPagination(page, limit, total),
+      pagination: buildPagination(
+        page,
+        limit,
+        total
+      ),
     });
   } catch (error) {
-    console.error("getAccountingEntries:", error);
+    console.error(
+      "getAccountingEntries:",
+      error
+    );
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: "Failed to load accounting entries",
+      message:
+        "Failed to load accounting entries",
     });
   }
 };
@@ -427,133 +792,660 @@ export const getAccountingEntries = async (req, res) => {
 // GET /api/admin/accounting/entries/:id
 // ======================================================
 
-export const getAccountingEntryById = async (req, res) => {
-  try {
-    const entry = await prisma.accountingEntry.findUnique({
-      where: { id: req.params.id },
+export const getAccountingEntryById =
+  async (req, res) => {
+    try {
+      const entry =
+        await prisma.accountingEntry.findUnique({
+          where: {
+            id: req.params.id,
+          },
 
-      include: {
-        vendor: true,
+          include: {
+            vendor: true,
 
-        shipment: true,
+            shipment: true,
 
-        returnRequest: true,
+            returnRequest: true,
 
-        settlementItems: {
-          include: { settlement: true },
+            ...settlementAllocationInclude,
+          },
+        });
+
+      if (!entry) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Accounting entry not found",
+        });
+      }
+
+      const allocated =
+        allocatedOf(entry);
+
+      return res.json({
+        success: true,
+
+        data: {
+          ...entry,
+
+          amount:
+            toNumber(entry.amount),
+
+          allocatedAmount:
+            money(allocated),
+
+          remainingAmount:
+            money(
+              Math.max(
+                0,
+                toNumber(entry.amount) -
+                  allocated
+              )
+            ),
+
+          settlementItems:
+            entry.settlementItems.map(
+              (item) => ({
+                ...item,
+
+                amount:
+                  toNumber(item.amount),
+
+                settlement:
+                  item.settlement
+                    ? {
+                        ...item.settlement,
+
+                        netPayable:
+                          toNumber(
+                            item.settlement
+                              .netPayable
+                          ),
+
+                        netAmount:
+                          toNumber(
+                            item.settlement
+                              .netPayable
+                          ),
+                      }
+                    : null,
+              })
+            ),
         },
-      },
-    });
+      });
+    } catch (error) {
+      console.error(
+        "getAccountingEntryById:",
+        error
+      );
 
-    if (!entry) {
-      return res.status(404).json({
+      return res.status(500).json({
         success: false,
-        message: "Accounting entry not found",
+        message:
+          "Failed to load accounting entry",
       });
     }
-
-    const allocated = allocatedOf(entry);
-
-    res.json({
-      success: true,
-
-      data: {
-        ...entry,
-
-        amount: toNumber(entry.amount),
-
-        allocatedAmount: money(allocated),
-
-        remainingAmount: money(
-          toNumber(entry.amount) - allocated
-        ),
-
-        settlementItems: entry.settlementItems.map(
-          (item) => ({
-            ...item,
-
-            amount: toNumber(item.amount),
-
-            settlement: item.settlement
-              ? {
-                  ...item.settlement,
-
-                  netPayable: toNumber(
-                    item.settlement.netPayable
-                  ),
-
-                  netAmount: toNumber(
-                    item.settlement.netPayable
-                  ),
-                }
-              : null,
-          })
-        ),
-      },
-    });
-  } catch (error) {
-    console.error("getAccountingEntryById:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to load accounting entry",
-    });
-  }
-};
+  };
 
 // ======================================================
 // GET VENDORS ACCOUNTING SUMMARY
 // GET /api/admin/accounting/vendors
 // ======================================================
 
-export const getAccountingVendors = async (req, res) => {
-  try {
-    const vendors = await prisma.vendor.findMany({
-      include: {
-        _count: {
-          select: {
-            shipments: true,
-            accountingEntries: true,
-            settlements: true,
-          },
-        },
+export const getAccountingVendors =
+  async (req, res) => {
+    try {
+      const vendors =
+        await prisma.vendor.findMany({
+          include: {
+            _count: {
+              select: {
+                shipments: true,
+                accountingEntries: true,
+                settlements: true,
+              },
+            },
 
-        accountingEntries: {
-          select: {
-            amount: true,
-            direction: true,
+            accountingEntries: {
+              where: {
+                type: {
+                  not: "VENDOR_SETTLEMENT",
+                },
+              },
 
-            settlementItems: {
-              select: { amount: true },
+              select: {
+                amount: true,
+                direction: true,
+                type: true,
+
+                settlementItems: {
+                  select: {
+                    amount: true,
+
+                    settlement: {
+                      select: {
+                        status: true,
+                      },
+                    },
+                  },
+                },
+              },
+            },
+
+            settlements: {
+              where: {
+                status: {
+                  in: [
+                    "PENDING",
+                    "PROCESSING",
+                  ],
+                },
+              },
+
+              select: {
+                netPayable: true,
+              },
             },
           },
-        },
 
-        settlements: {
+          orderBy: {
+            companyName: "asc",
+          },
+        });
+
+      const data =
+        vendors.map((vendor) => {
+          let totalCredits = 0;
+          let totalDebits = 0;
+
+          let availableCredits = 0;
+          let availableDebits = 0;
+
+          for (
+            const entry of
+            vendor.accountingEntries
+          ) {
+            const amount =
+              toNumber(entry.amount);
+
+            const allocated =
+              entry.settlementItems.reduce(
+                (sum, item) => {
+                  if (
+                    item.settlement?.status ===
+                    "CANCELLED"
+                  ) {
+                    return sum;
+                  }
+
+                  return (
+                    sum +
+                    toNumber(item.amount)
+                  );
+                },
+                0
+              );
+
+            const remaining =
+              money(
+                Math.max(
+                  0,
+                  amount - allocated
+                )
+              );
+
+            if (
+              entry.direction ===
+              "CREDIT"
+            ) {
+              totalCredits += amount;
+              availableCredits += remaining;
+            } else {
+              totalDebits += amount;
+              availableDebits += remaining;
+            }
+          }
+
+          totalCredits =
+            money(totalCredits);
+
+          totalDebits =
+            money(totalDebits);
+
+          availableCredits =
+            money(availableCredits);
+
+          availableDebits =
+            money(availableDebits);
+
+          const balance =
+            money(
+              availableCredits -
+                availableDebits
+            );
+
+          const outstandingSettlement =
+            vendor.settlements.reduce(
+              (sum, settlement) =>
+                sum +
+                toNumber(
+                  settlement.netPayable
+                ),
+              0
+            );
+
+          return {
+            id: vendor.id,
+
+            companyName:
+              vendor.companyName,
+
+            contactId:
+              vendor.contactId,
+
+            location:
+              vendor.location,
+
+            _count:
+              vendor._count,
+
+            totalCredits,
+
+            totalDebits,
+
+            availableCredits,
+
+            availableDebits,
+
+            balance,
+
+            direction:
+              balance > 0
+                ? "PAY_VENDOR"
+                : balance < 0
+                  ? "COLLECT_FROM_VENDOR"
+                  : null,
+
+            settlementAmount:
+              money(
+                Math.abs(balance)
+              ),
+
+            outstandingSettlement:
+              money(
+                outstandingSettlement
+              ),
+
+            pendingSettlementCount:
+              vendor.settlements.length,
+          };
+        });
+
+      return res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      console.error(
+        "getAccountingVendors:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message:
+          "Failed to load vendor accounting",
+      });
+    }
+  };
+
+// ======================================================
+// GET VENDOR UNSETTLED ENTRIES
+// GET /api/admin/accounting/vendors/:vendorId/unsettled
+// ======================================================
+
+export const getUnsettledVendorEntries =
+  async (req, res) => {
+    try {
+      const vendorId =
+        Number(req.params.vendorId);
+
+      if (
+        !vendorId ||
+        Number.isNaN(vendorId)
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Invalid vendor ID",
+        });
+      }
+
+      const vendor =
+        await prisma.vendor.findUnique({
           where: {
-            status: { in: ["PENDING", "PROCESSING"] },
+            id: vendorId,
           },
 
-          select: { netPayable: true },
+          select: {
+            id: true,
+            companyName: true,
+            contactId: true,
+            location: true,
+          },
+        });
+
+      if (!vendor) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Vendor not found",
+        });
+      }
+
+      const entries =
+        await prisma.accountingEntry.findMany({
+          where: {
+            vendorId,
+
+            type: {
+              not: "VENDOR_SETTLEMENT",
+            },
+          },
+
+          include: {
+            shipment: {
+              select: {
+                id: true,
+                trackingNumber: true,
+                receiverName: true,
+                shippingCharge: true,
+                codAmount: true,
+              },
+            },
+
+            returnRequest: {
+              select: {
+                id: true,
+                reason: true,
+                returnCharge: true,
+              },
+            },
+
+            ...settlementAllocationInclude,
+          },
+
+          orderBy: {
+            createdAt: "asc",
+          },
+        });
+
+      const formatted =
+        entries
+          .map((entry) => ({
+            id: entry.id,
+
+            type: entry.type,
+
+            direction:
+              entry.direction,
+
+            amount:
+              toNumber(entry.amount),
+
+            allocatedAmount:
+              money(
+                allocatedOf(entry)
+              ),
+
+            remainingAmount:
+              remainingOf(entry),
+
+            description:
+              entry.description,
+
+            shipment:
+              entry.shipment
+                ? {
+                    ...entry.shipment,
+
+                    shippingCharge:
+                      toNumber(
+                        entry.shipment
+                          .shippingCharge
+                      ),
+
+                    codAmount:
+                      toNumber(
+                        entry.shipment
+                          .codAmount
+                      ),
+                  }
+                : null,
+
+            returnRequest:
+              entry.returnRequest
+                ? {
+                    ...entry.returnRequest,
+
+                    returnCharge:
+                      toNumber(
+                        entry.returnRequest
+                          .returnCharge
+                      ),
+                  }
+                : null,
+
+            createdAt:
+              entry.createdAt,
+          }))
+          .filter(
+            (entry) =>
+              entry.remainingAmount > 0
+          );
+
+      let totalCredits = 0;
+      let totalDebits = 0;
+
+      const credits = [];
+      const debits = [];
+
+      for (
+        const entry of formatted
+      ) {
+        if (
+          entry.direction ===
+          "CREDIT"
+        ) {
+          totalCredits +=
+            entry.remainingAmount;
+
+          credits.push(entry);
+        } else {
+          totalDebits +=
+            entry.remainingAmount;
+
+          debits.push(entry);
+        }
+      }
+
+      totalCredits =
+        money(totalCredits);
+
+      totalDebits =
+        money(totalDebits);
+
+      const netAmount =
+        money(
+          totalCredits -
+            totalDebits
+        );
+
+      return res.json({
+        success: true,
+
+        data: {
+          vendor,
+
+          credits,
+
+          debits,
+
+          summary: {
+            totalCredits,
+
+            totalDebits,
+
+            netAmount,
+
+            direction:
+              netAmount > 0
+                ? "PAY_VENDOR"
+                : netAmount < 0
+                  ? "COLLECT_FROM_VENDOR"
+                  : null,
+
+            settlementAmount:
+              money(
+                Math.abs(netAmount)
+              ),
+          },
         },
-      },
+      });
+    } catch (error) {
+      console.error(
+        "getUnsettledVendorEntries:",
+        error
+      );
 
-      orderBy: { companyName: "asc" },
-    });
+      return res.status(500).json({
+        success: false,
+        message:
+          "Failed to load vendor unsettled entries",
+      });
+    }
+  };
 
-    const data = vendors.map((vendor) => {
+// ======================================================
+// GET VENDOR ACCOUNTING
+// GET /api/admin/accounting/vendors/:vendorId
+// ======================================================
+
+export const getVendorAccounting =
+  async (req, res) => {
+    try {
+      const vendorId =
+        Number(req.params.vendorId);
+
+      if (
+        !vendorId ||
+        Number.isNaN(vendorId)
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Invalid vendor ID",
+        });
+      }
+
+      const vendor =
+        await prisma.vendor.findUnique({
+          where: {
+            id: vendorId,
+          },
+
+          include: {
+            _count: {
+              select: {
+                shipments: true,
+                accountingEntries: true,
+                settlements: true,
+              },
+            },
+
+            settlements: {
+              orderBy: {
+                createdAt: "desc",
+              },
+
+              include: {
+                items: {
+                  include: {
+                    accountingEntry: true,
+                  },
+                },
+              },
+            },
+          },
+        });
+
+      if (!vendor) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Vendor not found",
+        });
+      }
+
+      const entries =
+        await prisma.accountingEntry.findMany({
+          where: {
+            vendorId,
+
+            type: {
+              not: "VENDOR_SETTLEMENT",
+            },
+          },
+
+          include: {
+            shipment: {
+              select: {
+                id: true,
+                trackingNumber: true,
+                receiverName: true,
+                paymentType: true,
+                codAmount: true,
+                shippingCharge: true,
+              },
+            },
+
+            returnRequest: {
+              select: {
+                id: true,
+                reason: true,
+                status: true,
+                returnCharge: true,
+              },
+            },
+
+            ...settlementAllocationInclude,
+          },
+
+          orderBy: {
+            createdAt: "desc",
+          },
+        });
+
       let totalCredits = 0;
       let totalDebits = 0;
 
       let availableCredits = 0;
       let availableDebits = 0;
 
-      for (const entry of vendor.accountingEntries) {
-        const amount = toNumber(entry.amount);
+      for (
+        const entry of entries
+      ) {
+        const amount =
+          toNumber(entry.amount);
 
-        const remaining = remainingOf(entry);
+        const remaining =
+          remainingOf(entry);
 
-        if (entry.direction === "CREDIT") {
+        if (
+          entry.direction ===
+          "CREDIT"
+        ) {
           totalCredits += amount;
           availableCredits += remaining;
         } else {
@@ -562,1431 +1454,1764 @@ export const getAccountingVendors = async (req, res) => {
         }
       }
 
-      const balance = money(
-        availableCredits - availableDebits
-      );
-
-      const outstandingSettlement = vendor.settlements.reduce(
-        (sum, settlement) =>
-          sum + toNumber(settlement.netPayable),
-        0
-      );
-
-      return {
-        id: vendor.id,
-
-        companyName: vendor.companyName,
-
-        contactId: vendor.contactId,
-
-        location: vendor.location,
-
-        _count: vendor._count,
-
-        totalCredits: money(totalCredits),
-
-        totalDebits: money(totalDebits),
-
-        availableCredits: money(availableCredits),
-
-        availableDebits: money(availableDebits),
-
-        balance,
-
-        direction:
-          balance > 0
-            ? "PAY_VENDOR"
-            : balance < 0
-              ? "COLLECT_FROM_VENDOR"
-              : null,
-
-        settlementAmount: Math.abs(balance),
-
-        outstandingSettlement: money(
-          outstandingSettlement
-        ),
-
-        pendingSettlementCount:
-          vendor.settlements.length,
-      };
-    });
-
-    res.json({
-      success: true,
-      data,
-    });
-  } catch (error) {
-    console.error("getAccountingVendors:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to load vendor accounting",
-    });
-  }
-};
-
-// ======================================================
-// GET VENDOR UNSETTLED ENTRIES
-// GET /api/admin/accounting/vendors/:vendorId/unsettled
-// ======================================================
-
-export const getUnsettledVendorEntries = async (
-  req,
-  res
-) => {
-  try {
-    const vendorId = Number(req.params.vendorId);
-
-    if (!vendorId || Number.isNaN(vendorId)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid vendor ID",
-      });
-    }
-
-    const vendor = await prisma.vendor.findUnique({
-      where: { id: vendorId },
-
-      select: {
-        id: true,
-        companyName: true,
-        contactId: true,
-        location: true,
-      },
-    });
-
-    if (!vendor) {
-      return res.status(404).json({
-        success: false,
-        message: "Vendor not found",
-      });
-    }
-
-    const entries = await prisma.accountingEntry.findMany({
-      where: { vendorId },
-
-      include: {
-        shipment: {
-          select: {
-            id: true,
-            trackingNumber: true,
-            receiverName: true,
-            shippingCharge: true,
-            codAmount: true,
-          },
-        },
-
-        returnRequest: {
-          select: {
-            id: true,
-            reason: true,
-            returnCharge: true,
-          },
-        },
-
-        settlementItems: {
-          select: { amount: true },
-        },
-      },
-
-      orderBy: { createdAt: "asc" },
-    });
-
-    const formatted = entries
-      .map((entry) => ({
-        id: entry.id,
-
-        type: entry.type,
-
-        direction: entry.direction,
-
-        amount: toNumber(entry.amount),
-
-        allocatedAmount: money(allocatedOf(entry)),
-
-        remainingAmount: remainingOf(entry),
-
-        description: entry.description,
-
-        shipment: entry.shipment,
-
-        returnRequest: entry.returnRequest,
-
-        createdAt: entry.createdAt,
-      }))
-      .filter((entry) => entry.remainingAmount > 0);
-
-    let totalCredits = 0;
-    let totalDebits = 0;
-
-    const credits = [];
-    const debits = [];
-
-    for (const entry of formatted) {
-      if (entry.direction === "CREDIT") {
-        totalCredits += entry.remainingAmount;
-        credits.push(entry);
-      } else {
-        totalDebits += entry.remainingAmount;
-        debits.push(entry);
-      }
-    }
-
-    const netAmount = money(totalCredits - totalDebits);
-
-    res.json({
-      success: true,
-
-      data: {
-        vendor,
-
-        credits,
-
-        debits,
-
-        summary: {
-          totalCredits: money(totalCredits),
-
-          totalDebits: money(totalDebits),
-
-          netAmount,
-
-          direction:
-            netAmount > 0
-              ? "PAY_VENDOR"
-              : netAmount < 0
-                ? "COLLECT_FROM_VENDOR"
-                : null,
-
-          settlementAmount: Math.abs(netAmount),
-        },
-      },
-    });
-  } catch (error) {
-    console.error("getUnsettledVendorEntries:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to load vendor unsettled entries",
-    });
-  }
-};
-
-// ======================================================
-// GET VENDOR ACCOUNTING
-// GET /api/admin/accounting/vendors/:vendorId
-// ======================================================
-
-export const getVendorAccounting = async (req, res) => {
-  try {
-    const vendorId = Number(req.params.vendorId);
-
-    if (!vendorId || Number.isNaN(vendorId)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid vendor ID",
-      });
-    }
-
-    const vendor = await prisma.vendor.findUnique({
-      where: { id: vendorId },
-
-      include: {
-        _count: {
-          select: {
-            shipments: true,
-            accountingEntries: true,
-            settlements: true,
-          },
-        },
-
-        settlements: {
-          orderBy: { createdAt: "desc" },
-
-          include: {
-            items: {
-              include: { accountingEntry: true },
-            },
-          },
-        },
-      },
-    });
-
-    if (!vendor) {
-      return res.status(404).json({
-        success: false,
-        message: "Vendor not found",
-      });
-    }
-
-    const entries = await prisma.accountingEntry.findMany({
-      where: { vendorId },
-
-      include: {
-        shipment: {
-          select: {
-            id: true,
-            trackingNumber: true,
-            receiverName: true,
-            paymentType: true,
-            codAmount: true,
-            shippingCharge: true,
-          },
-        },
-
-        returnRequest: {
-          select: {
-            id: true,
-            reason: true,
-            status: true,
-            returnCharge: true,
-          },
-        },
-
-        settlementItems: {
-          select: { amount: true },
-        },
-      },
-
-      orderBy: { createdAt: "desc" },
-    });
-
-    let totalCredits = 0;
-    let totalDebits = 0;
-
-    let availableCredits = 0;
-    let availableDebits = 0;
-
-    for (const entry of entries) {
-      const amount = toNumber(entry.amount);
-
-      const remaining = remainingOf(entry);
-
-      if (entry.direction === "CREDIT") {
-        totalCredits += amount;
-        availableCredits += remaining;
-      } else {
-        totalDebits += amount;
-        availableDebits += remaining;
-      }
-    }
-
-    const balance = money(
-      availableCredits - availableDebits
-    );
-
-    const remainingByTypes = (types) =>
-      money(
-        entries
-          .filter((entry) => types.includes(entry.type))
-          .reduce(
-            (sum, entry) => sum + remainingOf(entry),
-            0
+      totalCredits =
+        money(totalCredits);
+
+      totalDebits =
+        money(totalDebits);
+
+      availableCredits =
+        money(availableCredits);
+
+      availableDebits =
+        money(availableDebits);
+
+      const balance =
+        money(
+          availableCredits -
+            availableDebits
+        );
+
+      const remainingByTypes =
+        (types) =>
+          money(
+            entries
+              .filter((entry) =>
+                types.includes(
+                  entry.type
+                )
+              )
+              .reduce(
+                (sum, entry) =>
+                  sum +
+                  remainingOf(entry),
+                0
+              )
+          );
+
+      const outstandingSettlement =
+        vendor.settlements
+          .filter(
+            (settlement) =>
+              settlement.status ===
+                "PENDING" ||
+              settlement.status ===
+                "PROCESSING"
           )
+          .reduce(
+            (sum, settlement) =>
+              sum +
+              toNumber(
+                settlement.netPayable
+              ),
+            0
+          );
+
+      return res.json({
+        success: true,
+
+        data: {
+          vendor: {
+            id: vendor.id,
+
+            companyName:
+              vendor.companyName,
+
+            contactId:
+              vendor.contactId,
+
+            location:
+              vendor.location,
+
+            _count:
+              vendor._count,
+          },
+
+          summary: {
+            totalCredits,
+
+            totalDebits,
+
+            availableCredits,
+
+            availableDebits,
+
+            balance,
+
+            direction:
+              balance > 0
+                ? "PAY_VENDOR"
+                : balance < 0
+                  ? "COLLECT_FROM_VENDOR"
+                  : null,
+
+            settlementAmount:
+              money(
+                Math.abs(balance)
+              ),
+
+            outstandingSettlement:
+              money(
+                outstandingSettlement
+              ),
+
+            codAmount:
+              remainingByTypes([
+                "COD_COLLECTION",
+              ]),
+
+            shippingCharge:
+              remainingByTypes([
+                "SHIPPING_CHARGE",
+              ]),
+
+            returnCharge:
+              remainingByTypes([
+                "RETURN_CHARGE",
+              ]),
+
+            otherCharges:
+              remainingByTypes([
+                "PICKUP_CHARGE",
+                "STORAGE_CHARGE",
+                "OTHER_CHARGE",
+              ]),
+          },
+
+          entries:
+            entries.map((entry) => ({
+              ...entry,
+
+              amount:
+                toNumber(
+                  entry.amount
+                ),
+
+              allocatedAmount:
+                money(
+                  allocatedOf(entry)
+                ),
+
+              remainingAmount:
+                remainingOf(entry),
+            })),
+
+          settlements:
+            vendor.settlements.map(
+              (settlement) => ({
+                ...settlement,
+
+                totalCodAmount:
+                  toNumber(
+                    settlement
+                      .totalCodAmount
+                  ),
+
+                totalShippingCharge:
+                  toNumber(
+                    settlement
+                      .totalShippingCharge
+                  ),
+
+                totalReturnCharge:
+                  toNumber(
+                    settlement
+                      .totalReturnCharge
+                  ),
+
+                totalOtherCharges:
+                  toNumber(
+                    settlement
+                      .totalOtherCharges
+                  ),
+
+                totalCredits:
+                  toNumber(
+                    settlement
+                      .totalCredits
+                  ),
+
+                totalDebits:
+                  toNumber(
+                    settlement
+                      .totalDebits
+                  ),
+
+                netPayable:
+                  toNumber(
+                    settlement
+                      .netPayable
+                  ),
+
+                netAmount:
+                  toNumber(
+                    settlement
+                      .netPayable
+                  ),
+
+                items:
+                  settlement.items.map(
+                    (item) => ({
+                      ...item,
+
+                      amount:
+                        toNumber(
+                          item.amount
+                        ),
+
+                      accountingEntry:
+                        item.accountingEntry
+                          ? {
+                              ...item.accountingEntry,
+
+                              amount:
+                                toNumber(
+                                  item
+                                    .accountingEntry
+                                    .amount
+                                ),
+                            }
+                          : null,
+                    })
+                  ),
+              })
+            ),
+        },
+      });
+    } catch (error) {
+      console.error(
+        "getVendorAccounting:",
+        error
       );
 
-    const outstandingSettlement = vendor.settlements
-      .filter(
-        (settlement) =>
-          settlement.status === "PENDING" ||
-          settlement.status === "PROCESSING"
-      )
-      .reduce(
-        (sum, settlement) =>
-          sum + toNumber(settlement.netPayable),
-        0
-      );
-
-    res.json({
-      success: true,
-
-      data: {
-        vendor: {
-          id: vendor.id,
-
-          companyName: vendor.companyName,
-
-          contactId: vendor.contactId,
-
-          location: vendor.location,
-
-          _count: vendor._count,
-        },
-
-        summary: {
-          totalCredits: money(totalCredits),
-
-          totalDebits: money(totalDebits),
-
-          availableCredits: money(availableCredits),
-
-          availableDebits: money(availableDebits),
-
-          balance,
-
-          direction:
-            balance > 0
-              ? "PAY_VENDOR"
-              : balance < 0
-                ? "COLLECT_FROM_VENDOR"
-                : null,
-
-          settlementAmount: Math.abs(balance),
-
-          outstandingSettlement: money(
-            outstandingSettlement
-          ),
-
-          codAmount: remainingByTypes([
-            "COD_COLLECTION",
-          ]),
-
-          shippingCharge: remainingByTypes([
-            "SHIPPING_CHARGE",
-          ]),
-
-          returnCharge: remainingByTypes([
-            "RETURN_CHARGE",
-          ]),
-
-          otherCharges: remainingByTypes([
-            "PICKUP_CHARGE",
-            "STORAGE_CHARGE",
-            "OTHER_CHARGE",
-          ]),
-        },
-
-        entries: entries.map((entry) => ({
-          ...entry,
-
-          amount: toNumber(entry.amount),
-
-          allocatedAmount: money(allocatedOf(entry)),
-
-          remainingAmount: remainingOf(entry),
-        })),
-
-        settlements: vendor.settlements.map(
-          (settlement) => ({
-            ...settlement,
-
-            totalCodAmount: toNumber(
-              settlement.totalCodAmount
-            ),
-
-            totalShippingCharge: toNumber(
-              settlement.totalShippingCharge
-            ),
-
-            totalReturnCharge: toNumber(
-              settlement.totalReturnCharge
-            ),
-
-            totalOtherCharges: toNumber(
-              settlement.totalOtherCharges
-            ),
-
-            totalCredits: toNumber(
-              settlement.totalCredits
-            ),
-
-            totalDebits: toNumber(
-              settlement.totalDebits
-            ),
-
-            netPayable: toNumber(
-              settlement.netPayable
-            ),
-
-            netAmount: toNumber(settlement.netPayable),
-          })
-        ),
-      },
-    });
-  } catch (error) {
-    console.error("getVendorAccounting:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to load vendor accounting",
-    });
-  }
-};
+      return res.status(500).json({
+        success: false,
+        message:
+          "Failed to load vendor accounting",
+      });
+    }
+  };
 
 // ======================================================
 // GET COD COLLECTIONS
 // GET /api/admin/accounting/cod
 // ======================================================
 
-export const getCodCollections = async (req, res) => {
-  try {
-    const { status, vendorId, riderId, search } =
-      req.query;
+export const getCodCollections =
+  async (req, res) => {
+    try {
+      const {
+        status,
+        vendorId,
+        riderId,
+        search,
+      } = req.query;
 
-    const { page, limit, skip } = getPagination(req.query);
+      const {
+        page,
+        limit,
+        skip,
+      } = getPagination(req.query);
 
-    const where = {};
+      const where = {};
 
-    if (status) {
-      where.status = status;
-    }
+      if (status) {
+        where.status = status;
+      }
 
-    if (riderId) {
-      where.riderId = Number(riderId);
-    }
+      if (riderId) {
+        const id = Number(riderId);
 
-    if (vendorId) {
-      where.shipment = {
-        ...(where.shipment || {}),
-        vendorId: Number(vendorId),
-      };
-    }
+        if (!Number.isNaN(id)) {
+          where.riderId = id;
+        }
+      }
 
-    if (search) {
-      where.shipment = {
-        ...(where.shipment || {}),
+      if (vendorId) {
+        const id = Number(vendorId);
 
-        OR: [
-          {
-            trackingNumber: {
-              contains: search,
-              mode: "insensitive",
+        if (!Number.isNaN(id)) {
+          where.shipment = {
+            ...(where.shipment || {}),
+            vendorId: id,
+          };
+        }
+      }
+
+      if (search) {
+        where.shipment = {
+          ...(where.shipment || {}),
+
+          OR: [
+            {
+              trackingNumber: {
+                contains: search,
+                mode: "insensitive",
+              },
             },
-          },
 
-          {
-            receiverName: {
-              contains: search,
-              mode: "insensitive",
+            {
+              receiverName: {
+                contains: search,
+                mode: "insensitive",
+              },
             },
-          },
-        ],
-      };
-    }
+          ],
+        };
+      }
 
-    const [collections, total] = await Promise.all([
-      prisma.codCollection.findMany({
-        where,
+      const [
+        collections,
+        total,
+      ] = await Promise.all([
+        prisma.codCollection.findMany({
+          where,
 
-        include: {
-          shipment: {
-            select: {
-              id: true,
-              trackingNumber: true,
-              receiverName: true,
-              receiverPhone: true,
-              codAmount: true,
+          include: {
+            shipment: {
+              select: {
+                id: true,
+                trackingNumber: true,
+                receiverName: true,
+                receiverPhone: true,
+                codAmount: true,
 
-              vendor: {
-                select: {
-                  id: true,
-                  companyName: true,
+                vendor: {
+                  select: {
+                    id: true,
+                    companyName: true,
+                  },
+                },
+              },
+            },
+
+            rider: {
+              select: {
+                id: true,
+                phone: true,
+
+                user: {
+                  select: {
+                    name: true,
+                  },
                 },
               },
             },
           },
 
-          rider: {
-            select: {
-              id: true,
-              phone: true,
-
-              user: {
-                select: { name: true },
-              },
-            },
+          orderBy: {
+            createdAt: "desc",
           },
-        },
 
-        orderBy: { createdAt: "desc" },
+          skip,
 
-        skip,
+          take: limit,
+        }),
 
-        take: limit,
-      }),
+        prisma.codCollection.count({
+          where,
+        }),
+      ]);
 
-      prisma.codCollection.count({ where }),
-    ]);
+      const data =
+        collections.map(
+          (collection) => ({
+            id: collection.id,
 
-    const data = collections.map((collection) => ({
-      id: collection.id,
+            shipment:
+              collection.shipment
+                ? {
+                    ...collection.shipment,
 
-      shipment: collection.shipment
-        ? {
-            ...collection.shipment,
+                    codAmount:
+                      toNumber(
+                        collection
+                          .shipment
+                          .codAmount
+                      ),
+                  }
+                : null,
 
-            codAmount: toNumber(
-              collection.shipment.codAmount
-            ),
-          }
-        : null,
+            rider:
+              collection.rider,
 
-      rider: collection.rider,
+            amount:
+              toNumber(
+                collection.amount
+              ),
 
-      amount: toNumber(collection.amount),
+            status:
+              collection.status,
 
-      status: collection.status,
+            collectedAt:
+              collection.collectedAt,
 
-      collectedAt: collection.collectedAt,
+            notes:
+              collection.notes,
 
-      notes: collection.notes,
+            createdAt:
+              collection.createdAt,
+          })
+        );
 
-      createdAt: collection.createdAt,
-    }));
+      return res.json({
+        success: true,
 
-    res.json({
-      success: true,
+        data,
 
-      data,
+        pagination:
+          buildPagination(
+            page,
+            limit,
+            total
+          ),
+      });
+    } catch (error) {
+      console.error(
+        "getCodCollections:",
+        error
+      );
 
-      pagination: buildPagination(page, limit, total),
-    });
-  } catch (error) {
-    console.error("getCodCollections:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to load COD collections",
-    });
-  }
-};
+      return res.status(500).json({
+        success: false,
+        message:
+          "Failed to load COD collections",
+      });
+    }
+  };
 
 // ======================================================
 // CREATE SETTLEMENT
 // POST /api/admin/accounting/settlements
 // ======================================================
 
-export const createSettlement = async (req, res) => {
-  try {
-    const parsed = createSettlementSchema.safeParse({
-      ...req.body,
+export const createSettlement =
+  async (req, res) => {
+    try {
+      const parsed =
+        createSettlementSchema.safeParse({
+          ...req.body,
 
-      vendorId: Number(req.body?.vendorId),
-    });
+          vendorId:
+            Number(
+              req.body?.vendorId
+            ),
+        });
 
-    if (!parsed.success) {
-      return res.status(400).json({
-        success: false,
-
-        message: "Invalid settlement data",
-
-        errors: parsed.error.flatten(),
-      });
-    }
-
-    const { vendorId, notes } = parsed.data;
-
-    const vendor = await prisma.vendor.findUnique({
-      where: { id: vendorId },
-    });
-
-    if (!vendor) {
-      return res.status(404).json({
-        success: false,
-        message: "Vendor not found",
-      });
-    }
-
-    const activeSettlement =
-      await prisma.vendorSettlement.findFirst({
-        where: {
-          vendorId,
-
-          status: { in: ["PENDING", "PROCESSING"] },
-        },
-      });
-
-    if (activeSettlement) {
-      return res.status(400).json({
-        success: false,
-
-        message:
-          "Vendor already has a pending or processing settlement",
-      });
-    }
-
-    // ==================================================
-    // RESOLVE ITEMS
-    // ==================================================
-
-    let items = parsed.data.items;
-
-    const vendorEntries =
-      await prisma.accountingEntry.findMany({
-        where: { vendorId },
-
-        include: {
-          settlementItems: {
-            select: { amount: true },
-          },
-        },
-
-        orderBy: { createdAt: "asc" },
-      });
-
-    const entryMap = new Map(
-      vendorEntries.map((entry) => [entry.id, entry])
-    );
-
-    if (!items || items.length === 0) {
-      // Auto mode: settle every entry that still has a balance.
-      items = vendorEntries
-        .map((entry) => ({
-          accountingEntryId: entry.id,
-          amount: remainingOf(entry),
-        }))
-        .filter((item) => item.amount > 0);
-
-      if (items.length === 0) {
+      if (!parsed.success) {
         return res.status(400).json({
           success: false,
 
           message:
-            "This vendor has no unsettled accounting entries",
+            "Invalid settlement data",
+
+          errors:
+            parsed.error.flatten(),
         });
       }
-    } else {
-      const uniqueIds = new Set(
-        items.map((item) => item.accountingEntryId)
+
+      const {
+        vendorId,
+        notes,
+      } = parsed.data;
+
+      const settlement =
+        await prisma.$transaction(
+          async (tx) => {
+            // ==========================================
+            // VENDOR
+            // ==========================================
+
+            const vendor =
+              await tx.vendor.findUnique({
+                where: {
+                  id: vendorId,
+                },
+
+                select: {
+                  id: true,
+                  companyName: true,
+                  contactId: true,
+                  location: true,
+                },
+              });
+
+            if (!vendor) {
+              throw new Error(
+                "VENDOR_NOT_FOUND"
+              );
+            }
+
+            // ==========================================
+            // ACTIVE SETTLEMENT CHECK
+            // ==========================================
+
+            const activeSettlement =
+              await tx.vendorSettlement.findFirst({
+                where: {
+                  vendorId,
+
+                  status: {
+                    in: [
+                      "PENDING",
+                      "PROCESSING",
+                    ],
+                  },
+                },
+
+                select: {
+                  id: true,
+                },
+              });
+
+            if (activeSettlement) {
+              throw new Error(
+                "ACTIVE_SETTLEMENT_EXISTS"
+              );
+            }
+
+            // ==========================================
+            // LOAD OPERATIONAL SOURCE ENTRIES
+            // ==========================================
+
+            const vendorEntries =
+              await tx.accountingEntry.findMany({
+                where: {
+                  vendorId,
+
+                  type: {
+                    not:
+                      "VENDOR_SETTLEMENT",
+                  },
+                },
+
+                include:
+                  settlementAllocationInclude,
+
+                orderBy: {
+                  createdAt: "asc",
+                },
+              });
+
+            const entryMap =
+              new Map(
+                vendorEntries.map(
+                  (entry) => [
+                    entry.id,
+                    entry,
+                  ]
+                )
+              );
+
+            // ==========================================
+            // RESOLVE ITEMS
+            // ==========================================
+
+            let items =
+              parsed.data.items;
+
+            if (
+              !items ||
+              items.length === 0
+            ) {
+              items =
+                vendorEntries
+                  .map(
+                    (entry) => ({
+                      accountingEntryId:
+                        entry.id,
+
+                      amount:
+                        remainingOf(
+                          entry
+                        ),
+                    })
+                  )
+                  .filter(
+                    (item) =>
+                      item.amount > 0
+                  );
+            } else {
+              // ========================================
+              // DUPLICATES
+              // ========================================
+
+              const uniqueIds =
+                new Set(
+                  items.map(
+                    (item) =>
+                      item.accountingEntryId
+                  )
+                );
+
+              if (
+                uniqueIds.size !==
+                items.length
+              ) {
+                throw new Error(
+                  "DUPLICATE_ENTRIES"
+                );
+              }
+
+              // ========================================
+              // VERIFY ENTRIES
+              // ========================================
+
+              for (
+                const item of items
+              ) {
+                const entry =
+                  entryMap.get(
+                    item.accountingEntryId
+                  );
+
+                if (!entry) {
+                  throw new Error(
+                    "INVALID_VENDOR_ENTRY"
+                  );
+                }
+              }
+            }
+
+            // ==========================================
+            // NO ITEMS
+            // ==========================================
+
+            if (
+              !items.length
+            ) {
+              throw new Error(
+                "NO_UNSETTLED_ENTRIES"
+              );
+            }
+
+            // ==========================================
+            // TOTALS
+            // ==========================================
+
+            let totalCredits = 0;
+            let totalDebits = 0;
+
+            let totalCodAmount = 0;
+            let totalShippingCharge = 0;
+            let totalReturnCharge = 0;
+            let totalOtherCharges = 0;
+
+            const settlementItems = [];
+
+            for (
+              const item of items
+            ) {
+              const entry =
+                entryMap.get(
+                  item.accountingEntryId
+                );
+
+              if (!entry) {
+                throw new Error(
+                  `ENTRY_NOT_FOUND:${item.accountingEntryId}`
+                );
+              }
+
+              const remaining =
+                remainingOf(entry);
+
+              const requested =
+                money(item.amount);
+
+              // ========================================
+              // VALIDATE AMOUNT
+              // ========================================
+
+              if (
+                requested <= 0
+              ) {
+                throw new Error(
+                  `INVALID_AMOUNT:${entry.id}`
+                );
+              }
+
+              if (
+                requested >
+                remaining
+              ) {
+                throw new Error(
+                  `INSUFFICIENT_BALANCE:${entry.id}:${remaining.toFixed(
+                    2
+                  )}`
+                );
+              }
+
+              // ========================================
+              // CREDIT / DEBIT
+              // ========================================
+
+              if (
+                entry.direction ===
+                "CREDIT"
+              ) {
+                totalCredits +=
+                  requested;
+              } else {
+                totalDebits +=
+                  requested;
+              }
+
+              // ========================================
+              // BREAKDOWN
+              // ========================================
+
+              switch (
+                entry.type
+              ) {
+                case "COD_COLLECTION":
+                  totalCodAmount +=
+                    requested;
+                  break;
+
+                case "SHIPPING_CHARGE":
+                  totalShippingCharge +=
+                    requested;
+                  break;
+
+                case "RETURN_CHARGE":
+                  totalReturnCharge +=
+                    requested;
+                  break;
+
+                default:
+                  totalOtherCharges +=
+                    requested;
+                  break;
+              }
+
+              settlementItems.push({
+                accountingEntryId:
+                  entry.id,
+
+                amount:
+                  requested,
+              });
+            }
+
+            totalCredits =
+              money(totalCredits);
+
+            totalDebits =
+              money(totalDebits);
+
+            totalCodAmount =
+              money(totalCodAmount);
+
+            totalShippingCharge =
+              money(totalShippingCharge);
+
+            totalReturnCharge =
+              money(totalReturnCharge);
+
+            totalOtherCharges =
+              money(totalOtherCharges);
+
+            // ==========================================
+            // NET
+            // ==========================================
+
+            const netAmount =
+              money(
+                totalCredits -
+                  totalDebits
+              );
+
+            if (
+              netAmount === 0
+            ) {
+              throw new Error(
+                "ZERO_BALANCE"
+              );
+            }
+
+            const direction =
+              netAmount > 0
+                ? "PAY_VENDOR"
+                : "COLLECT_FROM_VENDOR";
+
+            const netPayable =
+              money(
+                Math.abs(netAmount)
+              );
+
+            // ==========================================
+            // CREATE SETTLEMENT
+            // ==========================================
+
+            return tx.vendorSettlement.create({
+              data: {
+                vendorId,
+
+                direction,
+
+                totalCodAmount,
+
+                totalShippingCharge,
+
+                totalReturnCharge,
+
+                totalOtherCharges,
+
+                totalCredits,
+
+                totalDebits,
+
+                netPayable,
+
+                status:
+                  "PENDING",
+
+                notes:
+                  notes || null,
+
+                items: {
+                  create:
+                    settlementItems,
+                },
+              },
+
+              include: {
+                vendor: {
+                  select: {
+                    id: true,
+                    companyName: true,
+                    contactId: true,
+                    location: true,
+                  },
+                },
+
+                items: {
+                  include: {
+                    accountingEntry: true,
+                  },
+                },
+              },
+            });
+          },
+          {
+            maxWait: 10000,
+            timeout: 15000,
+          }
+        );
+
+      return res.status(201).json({
+        success: true,
+
+        message:
+          settlement.direction ===
+          "PAY_VENDOR"
+            ? "Vendor payment settlement created"
+            : "Vendor collection settlement created",
+
+        data: {
+          ...settlement,
+
+          totalCodAmount:
+            toNumber(
+              settlement.totalCodAmount
+            ),
+
+          totalShippingCharge:
+            toNumber(
+              settlement.totalShippingCharge
+            ),
+
+          totalReturnCharge:
+            toNumber(
+              settlement.totalReturnCharge
+            ),
+
+          totalOtherCharges:
+            toNumber(
+              settlement.totalOtherCharges
+            ),
+
+          totalCredits:
+            toNumber(
+              settlement.totalCredits
+            ),
+
+          totalDebits:
+            toNumber(
+              settlement.totalDebits
+            ),
+
+          netPayable:
+            toNumber(
+              settlement.netPayable
+            ),
+
+          netAmount:
+            toNumber(
+              settlement.netPayable
+            ),
+        },
+      });
+    } catch (error) {
+      console.error(
+        "createSettlement:",
+        error
       );
 
-      if (uniqueIds.size !== items.length) {
-        return res.status(400).json({
-          success: false,
+      switch (
+        error.message
+      ) {
+        case "VENDOR_NOT_FOUND":
+          return res.status(404).json({
+            success: false,
+            message:
+              "Vendor not found",
+          });
 
-          message: "Duplicate accounting entries selected",
-        });
-      }
-
-      for (const item of items) {
-        if (!entryMap.has(item.accountingEntryId)) {
+        case "ACTIVE_SETTLEMENT_EXISTS":
           return res.status(400).json({
             success: false,
+            message:
+              "Vendor already has a pending or processing settlement",
+          });
 
+        case "DUPLICATE_ENTRIES":
+          return res.status(400).json({
+            success: false,
+            message:
+              "Duplicate accounting entries selected",
+          });
+
+        case "INVALID_VENDOR_ENTRY":
+          return res.status(400).json({
+            success: false,
             message:
               "One or more accounting entries do not belong to this vendor",
           });
-        }
+
+        case "NO_UNSETTLED_ENTRIES":
+          return res.status(400).json({
+            success: false,
+            message:
+              "This vendor has no unsettled accounting entries",
+          });
+
+        case "ZERO_BALANCE":
+          return res.status(400).json({
+            success: false,
+            message:
+              "Selected entries result in zero balance",
+          });
+
+        default:
+          if (
+            error.message?.startsWith(
+              "INSUFFICIENT_BALANCE:"
+            )
+          ) {
+            const parts =
+              error.message.split(":");
+
+            return res.status(400).json({
+              success: false,
+
+              message:
+                `Accounting entry ${parts[1]} only has Rs. ${parts[2]} available`,
+            });
+          }
+
+          if (
+            error.message?.startsWith(
+              "INVALID_AMOUNT:"
+            )
+          ) {
+            return res.status(400).json({
+              success: false,
+
+              message:
+                "Settlement amount must be greater than zero",
+            });
+          }
+
+          return res.status(500).json({
+            success: false,
+
+            message:
+              "Failed to create settlement",
+          });
       }
     }
-
-    // ==================================================
-    // TOTALS
-    // ==================================================
-
-    let totalCredits = 0;
-    let totalDebits = 0;
-
-    let totalCodAmount = 0;
-    let totalShippingCharge = 0;
-    let totalReturnCharge = 0;
-    let totalOtherCharges = 0;
-
-    const settlementItems = [];
-
-    for (const item of items) {
-      const entry = entryMap.get(item.accountingEntryId);
-
-      if (!entry) {
-        return res.status(400).json({
-          success: false,
-
-          message: `Accounting entry ${item.accountingEntryId} not found`,
-        });
-      }
-
-      const remaining = remainingOf(entry);
-
-      if (item.amount > remaining) {
-        return res.status(400).json({
-          success: false,
-
-          message: `Entry ${entry.id} only has Rs. ${remaining.toFixed(
-            2
-          )} available`,
-        });
-      }
-
-      if (entry.direction === "CREDIT") {
-        totalCredits += item.amount;
-      } else {
-        totalDebits += item.amount;
-      }
-
-      if (entry.type === "COD_COLLECTION") {
-        totalCodAmount += item.amount;
-      } else if (entry.type === "SHIPPING_CHARGE") {
-        totalShippingCharge += item.amount;
-      } else if (entry.type === "RETURN_CHARGE") {
-        totalReturnCharge += item.amount;
-      } else {
-        totalOtherCharges += item.amount;
-      }
-
-      settlementItems.push({
-        accountingEntryId: entry.id,
-
-        amount: item.amount,
-      });
-    }
-
-    totalCredits = money(totalCredits);
-    totalDebits = money(totalDebits);
-
-    const netAmount = money(totalCredits - totalDebits);
-
-    if (netAmount === 0) {
-      return res.status(400).json({
-        success: false,
-
-        message: "Selected entries result in zero balance",
-      });
-    }
-
-    const direction =
-      netAmount > 0 ? "PAY_VENDOR" : "COLLECT_FROM_VENDOR";
-
-    const settlement =
-      await prisma.vendorSettlement.create({
-        data: {
-          vendorId,
-
-          direction,
-
-          totalCodAmount: money(totalCodAmount),
-
-          totalShippingCharge: money(
-            totalShippingCharge
-          ),
-
-          totalReturnCharge: money(totalReturnCharge),
-
-          totalOtherCharges: money(totalOtherCharges),
-
-          totalCredits,
-
-          totalDebits,
-
-          // Prisma field is netPayable.
-          // Stored as the absolute amount to move,
-          // the direction says which way it moves.
-          netPayable: Math.abs(netAmount),
-
-          status: "PENDING",
-
-          notes: notes || null,
-
-          items: { create: settlementItems },
-        },
-
-        include: {
-          vendor: {
-            select: {
-              id: true,
-              companyName: true,
-              contactId: true,
-            },
-          },
-
-          items: {
-            include: { accountingEntry: true },
-          },
-        },
-      });
-
-    res.status(201).json({
-      success: true,
-
-      message:
-        direction === "PAY_VENDOR"
-          ? "Vendor payment settlement created"
-          : "Vendor collection settlement created",
-
-      data: {
-        ...settlement,
-
-        totalCodAmount: toNumber(
-          settlement.totalCodAmount
-        ),
-
-        totalShippingCharge: toNumber(
-          settlement.totalShippingCharge
-        ),
-
-        totalReturnCharge: toNumber(
-          settlement.totalReturnCharge
-        ),
-
-        totalOtherCharges: toNumber(
-          settlement.totalOtherCharges
-        ),
-
-        totalCredits: toNumber(settlement.totalCredits),
-
-        totalDebits: toNumber(settlement.totalDebits),
-
-        netPayable: toNumber(settlement.netPayable),
-
-        netAmount: toNumber(settlement.netPayable),
-      },
-    });
-  } catch (error) {
-    console.error("createSettlement:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to create settlement",
-    });
-  }
-};
+  };
 
 // ======================================================
 // GET SETTLEMENTS
 // GET /api/admin/accounting/settlements
 // ======================================================
 
-export const getSettlements = async (req, res) => {
-  try {
-    const { vendorId, status, direction } = req.query;
+export const getSettlements =
+  async (req, res) => {
+    try {
+      const {
+        vendorId,
+        status,
+        direction,
+      } = req.query;
 
-    const { page, limit, skip } = getPagination(req.query);
+      const {
+        page,
+        limit,
+        skip,
+      } = getPagination(req.query);
 
-    const where = {};
+      const where = {};
 
-    if (vendorId) {
-      where.vendorId = Number(vendorId);
-    }
+      if (vendorId) {
+        const id =
+          Number(vendorId);
 
-    if (status) {
-      where.status = status;
-    }
+        if (!Number.isNaN(id)) {
+          where.vendorId = id;
+        }
+      }
 
-    if (direction) {
-      where.direction = direction;
-    }
+      if (status) {
+        where.status = status;
+      }
 
-    const [settlements, total] = await Promise.all([
-      prisma.vendorSettlement.findMany({
-        where,
+      if (direction) {
+        where.direction =
+          direction;
+      }
 
-        include: {
-          vendor: {
-            select: {
-              id: true,
-              companyName: true,
-              contactId: true,
-              location: true,
+      const [
+        settlements,
+        total,
+      ] = await Promise.all([
+        prisma.vendorSettlement.findMany({
+          where,
+
+          include: {
+            vendor: {
+              select: {
+                id: true,
+                companyName: true,
+                contactId: true,
+                location: true,
+              },
             },
-          },
 
-          items: {
-            include: {
-              accountingEntry: {
-                select: {
-                  id: true,
-                  type: true,
-                  direction: true,
-                  amount: true,
-                  description: true,
+            items: {
+              include: {
+                accountingEntry: {
+                  select: {
+                    id: true,
+                    type: true,
+                    direction: true,
+                    amount: true,
+                    description: true,
 
-                  shipment: {
-                    select: {
-                      trackingNumber: true,
+                    shipment: {
+                      select: {
+                        trackingNumber: true,
+                      },
                     },
                   },
                 },
               },
             },
           },
-        },
 
-        orderBy: { createdAt: "desc" },
+          orderBy: {
+            createdAt: "desc",
+          },
 
-        skip,
+          skip,
 
-        take: limit,
-      }),
+          take: limit,
+        }),
 
-      prisma.vendorSettlement.count({ where }),
-    ]);
+        prisma.vendorSettlement.count({
+          where,
+        }),
+      ]);
 
-    const data = settlements.map((settlement) => ({
-      ...settlement,
+      const data =
+        settlements.map(
+          (settlement) => ({
+            ...settlement,
 
-      totalCodAmount: toNumber(
-        settlement.totalCodAmount
-      ),
-
-      totalShippingCharge: toNumber(
-        settlement.totalShippingCharge
-      ),
-
-      totalReturnCharge: toNumber(
-        settlement.totalReturnCharge
-      ),
-
-      totalOtherCharges: toNumber(
-        settlement.totalOtherCharges
-      ),
-
-      totalCredits: toNumber(settlement.totalCredits),
-
-      totalDebits: toNumber(settlement.totalDebits),
-
-      netPayable: toNumber(settlement.netPayable),
-
-      netAmount: toNumber(settlement.netPayable),
-
-      items: settlement.items.map((item) => ({
-        ...item,
-
-        amount: toNumber(item.amount),
-
-        accountingEntry: item.accountingEntry
-          ? {
-              ...item.accountingEntry,
-
-              amount: toNumber(
-                item.accountingEntry.amount
+            totalCodAmount:
+              toNumber(
+                settlement.totalCodAmount
               ),
-            }
-          : null,
-      })),
-    }));
 
-    res.json({
-      success: true,
+            totalShippingCharge:
+              toNumber(
+                settlement
+                  .totalShippingCharge
+              ),
 
-      data,
+            totalReturnCharge:
+              toNumber(
+                settlement
+                  .totalReturnCharge
+              ),
 
-      pagination: buildPagination(page, limit, total),
-    });
-  } catch (error) {
-    console.error("getSettlements:", error);
+            totalOtherCharges:
+              toNumber(
+                settlement
+                  .totalOtherCharges
+              ),
 
-    res.status(500).json({
-      success: false,
-      message: "Failed to load settlements",
-    });
-  }
-};
+            totalCredits:
+              toNumber(
+                settlement.totalCredits
+              ),
+
+            totalDebits:
+              toNumber(
+                settlement.totalDebits
+              ),
+
+            netPayable:
+              toNumber(
+                settlement.netPayable
+              ),
+
+            netAmount:
+              toNumber(
+                settlement.netPayable
+              ),
+
+            items:
+              settlement.items.map(
+                (item) => ({
+                  ...item,
+
+                  amount:
+                    toNumber(
+                      item.amount
+                    ),
+
+                  accountingEntry:
+                    item.accountingEntry
+                      ? {
+                          ...item.accountingEntry,
+
+                          amount:
+                            toNumber(
+                              item
+                                .accountingEntry
+                                .amount
+                            ),
+                        }
+                      : null,
+                })
+              ),
+          })
+        );
+
+      return res.json({
+        success: true,
+
+        data,
+
+        pagination:
+          buildPagination(
+            page,
+            limit,
+            total
+          ),
+      });
+    } catch (error) {
+      console.error(
+        "getSettlements:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message:
+          "Failed to load settlements",
+      });
+    }
+  };
 
 // ======================================================
 // GET SINGLE SETTLEMENT
 // GET /api/admin/accounting/settlements/:id
 // ======================================================
 
-export const getSettlementById = async (req, res) => {
-  try {
-    const settlement =
-      await prisma.vendorSettlement.findUnique({
-        where: { id: req.params.id },
-
-        include: {
-          vendor: true,
-
-          items: {
-            include: {
-              accountingEntry: {
-                include: {
-                  shipment: true,
-                  returnRequest: true,
-                },
-              },
-            },
-          },
-        },
-      });
-
-    if (!settlement) {
-      return res.status(404).json({
-        success: false,
-        message: "Settlement not found",
-      });
-    }
-
-    res.json({
-      success: true,
-
-      data: {
-        ...settlement,
-
-        totalCodAmount: toNumber(
-          settlement.totalCodAmount
-        ),
-
-        totalShippingCharge: toNumber(
-          settlement.totalShippingCharge
-        ),
-
-        totalReturnCharge: toNumber(
-          settlement.totalReturnCharge
-        ),
-
-        totalOtherCharges: toNumber(
-          settlement.totalOtherCharges
-        ),
-
-        totalCredits: toNumber(settlement.totalCredits),
-
-        totalDebits: toNumber(settlement.totalDebits),
-
-        netPayable: toNumber(settlement.netPayable),
-
-        netAmount: toNumber(settlement.netPayable),
-
-        items: settlement.items.map((item) => ({
-          ...item,
-
-          amount: toNumber(item.amount),
-        })),
-      },
-    });
-  } catch (error) {
-    console.error("getSettlementById:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to load settlement",
-    });
-  }
-};
-
-// ======================================================
-// PROCESS SETTLEMENT
-// PATCH /api/admin/accounting/settlements/:id/process
-// ======================================================
-
-export const processSettlement = async (req, res) => {
-  try {
-    const parsed = processSettlementSchema.safeParse(
-      req.body || {}
-    );
-
-    if (!parsed.success) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid data",
-      });
-    }
-
-    const settlement =
-      await prisma.vendorSettlement.findUnique({
-        where: { id: req.params.id },
-      });
-
-    if (!settlement) {
-      return res.status(404).json({
-        success: false,
-        message: "Settlement not found",
-      });
-    }
-
-    if (settlement.status !== "PENDING") {
-      return res.status(400).json({
-        success: false,
-
-        message:
-          "Only pending settlements can be processed",
-      });
-    }
-
-    const updated = await prisma.vendorSettlement.update({
-      where: { id: settlement.id },
-
-      data: {
-        status: "PROCESSING",
-
-        notes: parsed.data.notes || settlement.notes,
-      },
-    });
-
-    res.json({
-      success: true,
-
-      message: "Settlement is now processing",
-
-      data: {
-        ...updated,
-
-        netPayable: toNumber(updated.netPayable),
-
-        netAmount: toNumber(updated.netPayable),
-      },
-    });
-  } catch (error) {
-    console.error("processSettlement:", error);
-
-    res.status(500).json({
-      success: false,
-
-      message: "Failed to process settlement",
-    });
-  }
-};
-
-// ======================================================
-// PAY / COLLECT SETTLEMENT
-// PATCH /api/admin/accounting/settlements/:id/pay
-// ======================================================
-
-export const completeSettlement = async (req, res) => {
-  try {
-    const parsed = paySettlementSchema.safeParse(
-      req.body || {}
-    );
-
-    if (!parsed.success) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid payment data",
-      });
-    }
-
-    const settlement =
-      await prisma.vendorSettlement.findUnique({
-        where: { id: req.params.id },
-
-        include: {
-          vendor: true,
-          items: true,
-        },
-      });
-
-    if (!settlement) {
-      return res.status(404).json({
-        success: false,
-        message: "Settlement not found",
-      });
-    }
-
-    if (
-      settlement.status !== "PROCESSING" &&
-      settlement.status !== "PENDING"
-    ) {
-      return res.status(400).json({
-        success: false,
-
-        message:
-          "Only pending or processing settlements can be completed",
-      });
-    }
-
-    const amount = Math.abs(
-      toNumber(settlement.netPayable)
-    );
-
-    if (amount <= 0) {
-      return res.status(400).json({
-        success: false,
-
-        message:
-          "Settlement amount must be greater than zero",
-      });
-    }
-
-    const description =
-      settlement.direction === "PAY_VENDOR"
-        ? `Paid vendor settlement ${settlement.id}`
-        : `Collected vendor settlement ${settlement.id}`;
-
-    const result = await prisma.$transaction(
-      async (tx) => {
-        // ============================================
-        // VERIFY SETTLEMENT ITEMS
-        // ============================================
-
-        for (const item of settlement.items) {
-          const entry =
-            await tx.accountingEntry.findUnique({
-              where: { id: item.accountingEntryId },
-
-              include: {
-                settlementItems: {
-                  select: {
-                    amount: true,
-                    settlementId: true,
-                  },
-                },
-              },
-            });
-
-          if (!entry) {
-            throw new Error(
-              `Accounting entry ${item.accountingEntryId} not found`
-            );
-          }
-
-          const otherAllocated = entry.settlementItems
-            .filter(
-              (x) => x.settlementId !== settlement.id
-            )
-            .reduce(
-              (sum, x) => sum + toNumber(x.amount),
-              0
-            );
-
-          const available = money(
-            toNumber(entry.amount) -
-              otherAllocated -
-              toNumber(item.amount)
-          );
-
-          if (available < 0) {
-            throw new Error(
-              `Accounting entry ${entry.id} has insufficient remaining balance`
-            );
-          }
-        }
-
-        // ============================================
-        // CREATE SETTLEMENT ACCOUNTING ENTRY
-        // ============================================
-
-        await tx.accountingEntry.create({
-          data: {
-            vendorId: settlement.vendorId,
-
-            type: "VENDOR_SETTLEMENT",
-
-            direction:
-              settlement.direction === "PAY_VENDOR"
-                ? "DEBIT"
-                : "CREDIT",
-
-            amount,
-
-            description,
-          },
-        });
-
-        // ============================================
-        // MARK SETTLEMENT PAID
-        // ============================================
-
-        return tx.vendorSettlement.update({
-          where: { id: settlement.id },
-
-          data: {
-            status: "PAID",
-
-            paidAt: new Date(),
-
-            paymentReference:
-              parsed.data.paymentReference || null,
-
-            notes:
-              parsed.data.notes || settlement.notes,
+export const getSettlementById =
+  async (req, res) => {
+    try {
+      const settlement =
+        await prisma.vendorSettlement.findUnique({
+          where: {
+            id: req.params.id,
           },
 
           include: {
             vendor: true,
 
             items: {
-              include: { accountingEntry: true },
+              include: {
+                accountingEntry: {
+                  include: {
+                    shipment: true,
+                    returnRequest: true,
+                  },
+                },
+              },
             },
           },
         });
+
+      if (!settlement) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Settlement not found",
+        });
       }
-    );
 
-    res.json({
-      success: true,
+      return res.json({
+        success: true,
 
-      message:
-        settlement.direction === "PAY_VENDOR"
-          ? `Rs. ${amount.toFixed(2)} paid to vendor`
-          : `Rs. ${amount.toFixed(
-              2
-            )} collected from vendor`,
+        data: {
+          ...settlement,
 
-      data: {
-        ...result,
+          totalCodAmount:
+            toNumber(
+              settlement.totalCodAmount
+            ),
 
-        netPayable: toNumber(result.netPayable),
+          totalShippingCharge:
+            toNumber(
+              settlement
+                .totalShippingCharge
+            ),
 
-        netAmount: toNumber(result.netPayable),
-      },
-    });
-  } catch (error) {
-    console.error("completeSettlement:", error);
+          totalReturnCharge:
+            toNumber(
+              settlement
+                .totalReturnCharge
+            ),
 
-    res.status(500).json({
-      success: false,
+          totalOtherCharges:
+            toNumber(
+              settlement
+                .totalOtherCharges
+            ),
 
-      message:
-        error.message || "Failed to complete settlement",
-    });
-  }
-};
+          totalCredits:
+            toNumber(
+              settlement.totalCredits
+            ),
+
+          totalDebits:
+            toNumber(
+              settlement.totalDebits
+            ),
+
+          netPayable:
+            toNumber(
+              settlement.netPayable
+            ),
+
+          netAmount:
+            toNumber(
+              settlement.netPayable
+            ),
+
+          items:
+            settlement.items.map(
+              (item) => ({
+                ...item,
+
+                amount:
+                  toNumber(
+                    item.amount
+                  ),
+
+                accountingEntry:
+                  item.accountingEntry
+                    ? {
+                        ...item.accountingEntry,
+
+                        amount:
+                          toNumber(
+                            item
+                              .accountingEntry
+                              .amount
+                          ),
+                      }
+                    : null,
+              })
+            ),
+        },
+      });
+    } catch (error) {
+      console.error(
+        "getSettlementById:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message:
+          "Failed to load settlement",
+      });
+    }
+  };
+
+// ======================================================
+// PROCESS SETTLEMENT
+// PATCH /api/admin/accounting/settlements/:id/process
+// ======================================================
+
+export const processSettlement =
+  async (req, res) => {
+    try {
+      const parsed =
+        processSettlementSchema.safeParse(
+          req.body || {}
+        );
+
+      if (!parsed.success) {
+        return res.status(400).json({
+          success: false,
+
+          message:
+            "Invalid data",
+
+          errors:
+            parsed.error.flatten(),
+        });
+      }
+
+      const settlement =
+        await prisma.vendorSettlement.findUnique({
+          where: {
+            id: req.params.id,
+          },
+        });
+
+      if (!settlement) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Settlement not found",
+        });
+      }
+
+      if (
+        settlement.status !==
+        "PENDING"
+      ) {
+        return res.status(400).json({
+          success: false,
+
+          message:
+            "Only pending settlements can be processed",
+        });
+      }
+
+      const updated =
+        await prisma.vendorSettlement.update({
+          where: {
+            id: settlement.id,
+          },
+
+          data: {
+            status:
+              "PROCESSING",
+
+            notes:
+              parsed.data.notes ??
+              settlement.notes,
+          },
+        });
+
+      return res.json({
+        success: true,
+
+        message:
+          "Settlement is now processing",
+
+        data: {
+          ...updated,
+
+          netPayable:
+            toNumber(
+              updated.netPayable
+            ),
+
+          netAmount:
+            toNumber(
+              updated.netPayable
+            ),
+        },
+      });
+    } catch (error) {
+      console.error(
+        "processSettlement:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+
+        message:
+          "Failed to process settlement",
+      });
+    }
+  };
+
+// ======================================================
+// COMPLETE / PAY SETTLEMENT
+// PATCH /api/admin/accounting/settlements/:id/pay
+// ======================================================
+//
+// IMPORTANT:
+// This function DOES NOT create a VENDOR_SETTLEMENT
+// AccountingEntry.
+//
+// The VendorSettlement itself is the settlement record.
+//
+// ======================================================
+
+export const completeSettlement =
+  async (req, res) => {
+    try {
+      const parsed =
+        paySettlementSchema.safeParse(
+          req.body || {}
+        );
+
+      if (!parsed.success) {
+        return res.status(400).json({
+          success: false,
+
+          message:
+            "Invalid payment data",
+
+          errors:
+            parsed.error.flatten(),
+        });
+      }
+
+      // ==================================================
+      // LOAD SETTLEMENT
+      // ==================================================
+
+      const settlement =
+        await prisma.vendorSettlement.findUnique({
+          where: {
+            id: req.params.id,
+          },
+
+          include: {
+            vendor: {
+              select: {
+                id: true,
+                companyName: true,
+                contactId: true,
+                location: true,
+              },
+            },
+
+            items: {
+              select: {
+                id: true,
+                accountingEntryId: true,
+                amount: true,
+              },
+            },
+          },
+        });
+
+      if (!settlement) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Settlement not found",
+        });
+      }
+
+      // ==================================================
+      // ONLY PROCESSING CAN BE PAID
+      // ==================================================
+
+      if (
+        settlement.status !==
+        "PROCESSING"
+      ) {
+        return res.status(400).json({
+          success: false,
+
+          message:
+            "Only processing settlements can be completed",
+        });
+      }
+
+      // ==================================================
+      // MARK SETTLEMENT PAID
+      // ==================================================
+      //
+      // NO ACCOUNTING ENTRY CREATED.
+      //
+      // The SettlementItem allocations already reserve
+      // the source entries.
+      //
+      // Changing the settlement to PAID means those
+      // allocations are now permanently consumed.
+      //
+      // ==================================================
+
+      const updated =
+        await prisma.vendorSettlement.update({
+          where: {
+            id: settlement.id,
+          },
+
+          data: {
+            status:
+              "PAID",
+
+            paidAt:
+              new Date(),
+
+            paymentReference:
+              parsed.data
+                .paymentReference ??
+              settlement.paymentReference,
+
+            notes:
+              parsed.data.notes ??
+              settlement.notes,
+          },
+
+          include: {
+            vendor: {
+              select: {
+                id: true,
+                companyName: true,
+                contactId: true,
+                location: true,
+              },
+            },
+
+            items: {
+              include: {
+                accountingEntry: true,
+              },
+            },
+          },
+        });
+
+      const amount =
+        toNumber(
+          updated.netPayable
+        );
+
+      return res.json({
+        success: true,
+
+        message:
+          updated.direction ===
+          "PAY_VENDOR"
+            ? `Rs. ${amount.toFixed(
+                2
+              )} paid to vendor`
+            : `Rs. ${amount.toFixed(
+                2
+              )} collected from vendor`,
+
+        data: {
+          ...updated,
+
+          totalCodAmount:
+            toNumber(
+              updated.totalCodAmount
+            ),
+
+          totalShippingCharge:
+            toNumber(
+              updated
+                .totalShippingCharge
+            ),
+
+          totalReturnCharge:
+            toNumber(
+              updated.totalReturnCharge
+            ),
+
+          totalOtherCharges:
+            toNumber(
+              updated.totalOtherCharges
+            ),
+
+          totalCredits:
+            toNumber(
+              updated.totalCredits
+            ),
+
+          totalDebits:
+            toNumber(
+              updated.totalDebits
+            ),
+
+          netPayable:
+            toNumber(
+              updated.netPayable
+            ),
+
+          netAmount:
+            toNumber(
+              updated.netPayable
+            ),
+
+          items:
+            updated.items.map(
+              (item) => ({
+                ...item,
+
+                amount:
+                  toNumber(
+                    item.amount
+                  ),
+
+                accountingEntry:
+                  item.accountingEntry
+                    ? {
+                        ...item.accountingEntry,
+
+                        amount:
+                          toNumber(
+                            item
+                              .accountingEntry
+                              .amount
+                          ),
+                      }
+                    : null,
+              })
+            ),
+        },
+      });
+    } catch (error) {
+      console.error(
+        "completeSettlement:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+
+        message:
+          error.message ||
+          "Failed to complete settlement",
+      });
+    }
+  };
 
 // ======================================================
 // CANCEL SETTLEMENT
 // PATCH /api/admin/accounting/settlements/:id/cancel
 // ======================================================
 
-export const cancelSettlement = async (req, res) => {
-  try {
-    const settlement =
-      await prisma.vendorSettlement.findUnique({
-        where: { id: req.params.id },
-      });
+export const cancelSettlement =
+  async (req, res) => {
+    try {
+      const settlement =
+        await prisma.vendorSettlement.findUnique({
+          where: {
+            id: req.params.id,
+          },
+        });
 
-    if (!settlement) {
-      return res.status(404).json({
+      if (!settlement) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Settlement not found",
+        });
+      }
+
+      if (
+        settlement.status ===
+        "PAID"
+      ) {
+        return res.status(400).json({
+          success: false,
+
+          message:
+            "Paid settlement cannot be cancelled",
+        });
+      }
+
+      if (
+        settlement.status ===
+        "CANCELLED"
+      ) {
+        return res.status(400).json({
+          success: false,
+
+          message:
+            "Settlement is already cancelled",
+        });
+      }
+
+      const updated =
+        await prisma.vendorSettlement.update({
+          where: {
+            id: settlement.id,
+          },
+
+          data: {
+            status:
+              "CANCELLED",
+          },
+        });
+
+      return res.json({
+        success: true,
+
+        message:
+          "Settlement cancelled",
+
+        data: {
+          ...updated,
+
+          netPayable:
+            toNumber(
+              updated.netPayable
+            ),
+
+          netAmount:
+            toNumber(
+              updated.netPayable
+            ),
+        },
+      });
+    } catch (error) {
+      console.error(
+        "cancelSettlement:",
+        error
+      );
+
+      return res.status(500).json({
         success: false,
-        message: "Settlement not found",
+
+        message:
+          "Failed to cancel settlement",
       });
     }
-
-    if (settlement.status === "PAID") {
-      return res.status(400).json({
-        success: false,
-
-        message: "Paid settlement cannot be cancelled",
-      });
-    }
-
-    if (settlement.status === "CANCELLED") {
-      return res.status(400).json({
-        success: false,
-
-        message: "Settlement is already cancelled",
-      });
-    }
-
-    const updated = await prisma.vendorSettlement.update({
-      where: { id: settlement.id },
-
-      data: { status: "CANCELLED" },
-    });
-
-    res.json({
-      success: true,
-
-      message: "Settlement cancelled",
-
-      data: {
-        ...updated,
-
-        netPayable: toNumber(updated.netPayable),
-
-        netAmount: toNumber(updated.netPayable),
-      },
-    });
-  } catch (error) {
-    console.error("cancelSettlement:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to cancel settlement",
-    });
-  }
-};
+  };
 
 // ======================================================
-// BACKWARD-COMPATIBLE ALIASES
-// (old import names still work)
+// BACKWARD COMPATIBLE ALIASES
 // ======================================================
 
 export const getVendorUnsettledEntries =

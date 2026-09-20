@@ -17,7 +17,15 @@ enum Role {
   VENDOR
   RIDER
 }
-
+enum VehicleType {
+  MOTORCYCLE
+  SCOOTER
+  CAR
+  VAN
+  TRUCK
+  BICYCLE
+  OTHER
+}
 // ======================================================
 // SETTLEMENT
 // ======================================================
@@ -241,6 +249,12 @@ model Rider {
   phone String
   profilePicture String?
 
+  // Vehicle information - optional
+  vehicleType VehicleType?
+  vehicleNumber String?
+  vehicleBrand String?
+  vehicleModel String?
+
   latitude Float?
   longitude Float?
 
@@ -264,7 +278,6 @@ model Rider {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
-
 // ======================================================
 // PICKUP
 // ======================================================

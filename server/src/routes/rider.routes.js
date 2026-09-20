@@ -9,27 +9,87 @@ import {
   riderOrder,
   updateRiderLocation,
   getRiderLocation,
-
+  trackRiderByVehicleNumber,
 } from "../controller/rider.controller.js";
+
+import { authenticate } from "../middlewae/authMiddleware.js";
 
 const router = express.Router();
 
-router.get("/shipments", riderOrder);
+/*
+|--------------------------------------------------------------------------
+| RIDER SELF ROUTES
+|--------------------------------------------------------------------------
+*/
 
-router.post("/location", updateRiderLocation);
+router.get(
+  "/shipments",
+  authenticate,
+  riderOrder
+);
 
-router.get("/location", getRiderLocation);
+router.post(
+  "/location",
+  authenticate,
+  updateRiderLocation
+);
 
-router.post("/", createRider);
+router.get(
+  "/location",
+  authenticate,
+  getRiderLocation
+);
 
-router.get("/", getRiders);
+/*
+|--------------------------------------------------------------------------
+| PUBLIC VEHICLE TRACKING
+|--------------------------------------------------------------------------
+| No authentication required.
+|
+| Example:
+| GET /api/rider/track/BA 12 PA 3456
+|--------------------------------------------------------------------------
+*/
 
-router.get("/:id", getRider);
+router.get(
+  "/track/:vehicleNumber",
+  trackRiderByVehicleNumber
+);
 
-router.put("/:id", updateRider);
+/*
+|--------------------------------------------------------------------------
+| ADMIN RIDER MANAGEMENT
+|--------------------------------------------------------------------------
+*/
 
-router.delete("/:id", deleteRider);
+router.post(
+  "/",
+  authenticate,
+  createRider
+);
 
+router.get(
+  "/",
+  authenticate,
+  getRiders
+);
 
+router.get(
+  "/:id",
+  authenticate,
+  getRider
+);
+
+router.put(
+  "/:id",
+  authenticate,
+  updateRider
+);
+
+router.delete(
+  "/:id",
+  authenticate,
+  deleteRider
+);
 
 export default router;
