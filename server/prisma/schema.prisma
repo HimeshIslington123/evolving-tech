@@ -207,8 +207,13 @@ model Vendor {
   contactId String
   location String
 
-  userId Int @unique
-  user User @relation(fields: [userId], references: [id])
+  // true  = registered vendor with login/account
+  // false = unregistered vendor / guest business
+  isRegistered Boolean @default(true)   
+
+  // NULL for unregistered vendors
+  userId Int? @unique
+  user User? @relation(fields: [userId], references: [id])
 
   shipments Shipment[]
   pickups Pickup[]
@@ -218,6 +223,8 @@ model Vendor {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([isRegistered])
 }
 
 // ======================================================

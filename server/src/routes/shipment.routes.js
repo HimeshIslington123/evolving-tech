@@ -16,6 +16,8 @@ import {
   addShipmentMessage,
   getMyShipments,
   getMyRiderShipments,
+  scanShipment,
+  scanShipmentAction,
 } from "../controller/shipment.controller.js";
 
 const router = express.Router();
@@ -109,7 +111,17 @@ router.delete(
   authenticate,
   deleteShipment
 );
+router.post(
+  "/scan",
+  authenticate,
+  scanShipment
+);
 
+router.post(
+  "/scan/action",
+  authenticate,
+  scanShipmentAction
+);
 // =====================================
 // ASSIGN RIDER
 // =====================================

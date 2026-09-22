@@ -1879,7 +1879,80 @@ export const getCodCollections =
       });
     }
   };
+// ======================================================
+// CREATE UNREGISTERED VENDOR
+// POST /api/admin/accounting/unregistered-vendors
+// ======================================================
 
+export const createUnregisteredVendor = async (req, res) => {
+  try {
+    const {
+      companyName,
+      contactId,
+      location,
+    } = req.body;
+
+    if (!companyName?.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Company/vendor name is required",
+      });
+    }
+
+    if (!contactId?.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Contact number is required",
+      });
+    }
+
+    if (!location?.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Location is required",
+      });
+    }
+
+    const vendor = await prisma.vendor.create({
+      data: {
+        companyName: companyName.trim(),
+        contactId: contactId.trim(),
+        location: location.trim(),
+
+        isRegistered: false,
+
+        // IMPORTANT:
+        // No user is created.
+        userId: null,
+      },
+
+      select: {
+        id: true,
+        companyName: true,
+        contactId: true,
+        location: true,
+        isRegistered: true,
+        createdAt: true,
+      },
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: "Unregistered vendor created successfully",
+      data: vendor,
+    });
+  } catch (error) {
+    console.error(
+      "createUnregisteredVendor:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to create unregistered vendor",
+    });
+  }
+};
 // ======================================================
 // CREATE SETTLEMENT
 // POST /api/admin/accounting/settlements
@@ -2443,7 +2516,87 @@ export const createSettlement =
       }
     }
   };
+// ======================================================
+// MARK UNREGISTERED VENDOR AS REGISTERED
+// PATCH /api/admin/accounting/vendors/:vendorId/register
+// ======================================================
 
+export const registerVendorFromAccounting = async (
+  req,
+  res
+) => {
+  try {
+    const vendorId = Number(req.params.vendorId);
+
+    if (!vendorId || Number.isNaN(vendorId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid vendor ID",
+      });
+    }
+
+    const vendor = await prisma.vendor.findUnique({
+      where: {
+        id: vendorId,
+      },
+
+      select: {
+        id: true,
+        isRegistered: true,
+        userId: true,
+      },
+    });
+
+    if (!vendor) {
+      return res.status(404).json({
+        success: false,
+        message: "Vendor not found",
+      });
+    }
+
+    if (vendor.isRegistered) {
+      return res.status(400).json({
+        success: false,
+        message: "Vendor is already registered",
+      });
+    }
+
+    if (vendor.userId) {
+      return res.status(400).json({
+        success: false,
+        message: "Vendor already has a user account",
+      });
+    }
+
+    const updatedVendor =
+      await prisma.vendor.update({
+        where: {
+          id: vendorId,
+        },
+
+        data: {
+          isRegistered: true,
+        },
+      });
+
+    return res.json({
+      success: true,
+      message:
+        "Vendor marked as registered. Create/link the vendor login separately.",
+      data: updatedVendor,
+    });
+  } catch (error) {
+    console.error(
+      "registerVendorFromAccounting:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to register vendor",
+    });
+  }
+};
 // ======================================================
 // GET SETTLEMENTS
 // GET /api/admin/accounting/settlements

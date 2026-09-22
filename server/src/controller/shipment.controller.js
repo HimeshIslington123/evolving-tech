@@ -31,7 +31,6 @@ const getAuthenticatedVendor = async (req) => {
       where: {
         userId: Number(req.user.id),
       },
-
       select: {
         id: true,
       },
@@ -61,7 +60,6 @@ const getAuthenticatedStaff = async (req) => {
       where: {
         userId: Number(req.user.id),
       },
-
       select: {
         id: true,
       },
@@ -132,19 +130,6 @@ const shipmentInclude = {
 // CREATE SHIPMENT
 //
 // POST /api/shipment
-//
-// VENDOR:
-//   vendorId is automatically taken from authenticated vendor.
-//
-// STAFF / ADMIN:
-//   vendorId can be supplied.
-//   If vendorId is missing/null => WALK-IN shipment.
-//
-// REGISTERED VENDOR:
-//   sender data comes from Vendor snapshot.
-//
-// WALK-IN:
-//   sender data comes from request body.
 // ============================================================
 
 export const createShipment = async (req, res) => {
@@ -296,7 +281,6 @@ export const createShipment = async (req, res) => {
       }
     }
 
-    // PREPAID always has zero COD.
     if (normalizedPaymentType === "PREPAID") {
       finalCodAmount = 0;
     }
@@ -396,8 +380,7 @@ export const createShipment = async (req, res) => {
         });
       }
 
-      finalVendorId =
-        authenticatedVendorId;
+      finalVendorId = authenticatedVendorId;
     }
 
     // ========================================================
@@ -405,10 +388,6 @@ export const createShipment = async (req, res) => {
     // ========================================================
 
     if (role === "STAFF" || role === "ADMIN") {
-      // ------------------------------------------------------
-      // REGISTERED VENDOR
-      // ------------------------------------------------------
-
       if (
         vendorId !== null &&
         vendorId !== undefined &&
@@ -417,10 +396,6 @@ export const createShipment = async (req, res) => {
       ) {
         finalVendorId = Number(vendorId);
       }
-
-      // ------------------------------------------------------
-      // STAFF PROFILE
-      // ------------------------------------------------------
 
       if (role === "STAFF") {
         const staffId =
@@ -436,7 +411,6 @@ export const createShipment = async (req, res) => {
         finalCreatedByStaffId = staffId;
       }
 
-      // ADMIN can create walk-in or vendor shipment.
       if (role === "ADMIN") {
         finalCreatedByStaffId = null;
       }
@@ -505,20 +479,15 @@ export const createShipment = async (req, res) => {
     // SENDER SNAPSHOT
     // ========================================================
 
-    let finalSenderName = String(
-      senderName || ""
-    ).trim();
+    let finalSenderName =
+      String(senderName || "").trim();
 
-    let finalSenderPhone = String(
-      senderPhone || ""
-    ).trim();
+    let finalSenderPhone =
+      String(senderPhone || "").trim();
 
-    let finalSenderAddress = String(
-      senderAddress || ""
-    ).trim();
+    let finalSenderAddress =
+      String(senderAddress || "").trim();
 
-    // Registered vendor sender information is ALWAYS
-    // taken from the vendor profile.
     if (vendor) {
       finalSenderName =
         String(vendor.companyName || "").trim();
@@ -587,10 +556,6 @@ export const createShipment = async (req, res) => {
               data: {
                 trackingNumber,
 
-                // -----------------------------
-                // SENDER
-                // -----------------------------
-
                 senderName:
                   finalSenderName,
 
@@ -599,10 +564,6 @@ export const createShipment = async (req, res) => {
 
                 senderAddress:
                   finalSenderAddress,
-
-                // -----------------------------
-                // RECEIVER
-                // -----------------------------
 
                 receiverName:
                   String(receiverName).trim(),
@@ -613,19 +574,11 @@ export const createShipment = async (req, res) => {
                 receiverAddress:
                   String(receiverAddress).trim(),
 
-                // -----------------------------
-                // PACKAGE
-                // -----------------------------
-
                 packageType:
                   normalizedPackageType,
 
                 weight:
                   finalWeight,
-
-                // -----------------------------
-                // PAYMENT
-                // -----------------------------
 
                 paymentType:
                   normalizedPaymentType,
@@ -633,16 +586,8 @@ export const createShipment = async (req, res) => {
                 codAmount:
                   finalCodAmount,
 
-                // -----------------------------
-                // CHARGE
-                // -----------------------------
-
                 shippingCharge:
                   shippingCharge,
-
-                // -----------------------------
-                // OTHER
-                // -----------------------------
 
                 notes:
                   String(notes || "").trim() || null,
@@ -656,10 +601,6 @@ export const createShipment = async (req, res) => {
 
                 status:
                   "CREATED",
-
-                // -----------------------------
-                // RELATIONS
-                // -----------------------------
 
                 vendorId:
                   finalVendorId,
@@ -744,12 +685,6 @@ export const createShipment = async (req, res) => {
 
           // ==================================================
           // ACCOUNTING
-          //
-          // ONLY registered vendors.
-          //
-          // Walk-in shipment:
-          // vendorId = null
-          // therefore NO vendor accounting entry.
           // ==================================================
 
           if (
@@ -824,17 +759,14 @@ export const createShipment = async (req, res) => {
           ? "Registered vendor shipment created successfully."
           : "Unregistered customer shipment created successfully.",
 
-      shipment: result,
+      shipment:
+        result,
     });
   } catch (error) {
     console.error(
       "CREATE SHIPMENT ERROR:",
       error
     );
-
-    // ========================================================
-    // UNIQUE
-    // ========================================================
 
     if (error?.code === "P2002") {
       return res.status(409).json({
@@ -843,10 +775,6 @@ export const createShipment = async (req, res) => {
           "A shipment with this unique information already exists. Please try again.",
       });
     }
-
-    // ========================================================
-    // FOREIGN KEY
-    // ========================================================
 
     if (error?.code === "P2003") {
       return res.status(400).json({
@@ -858,6 +786,7 @@ export const createShipment = async (req, res) => {
 
     return res.status(500).json({
       success: false,
+
       message:
         "Failed to create shipment.",
 
@@ -870,18 +799,1273 @@ export const createShipment = async (req, res) => {
 };
 
 // ============================================================
-// GET MY SHIPMENTS
+// SCAN SHIPMENT
 //
-// GET /api/shipment/my
+// POST /api/shipment/scan
+//
+// Body:
+//
+// {
+//   trackingNumber: "RC-1789981579523-622"
+// }
+//
+// Returns shipment + actions available to logged-in user.
 // ============================================================
 
-export const getMyShipments = async (req, res) => {
+export const scanShipment = async (req, res) => {
   try {
     const role = getUserRole(req);
 
     if (!req.user) {
       return res.status(401).json({
+        success: false,
         message: "Authentication required.",
+      });
+    }
+
+    if (!["ADMIN", "STAFF", "RIDER"].includes(role)) {
+      return res.status(403).json({
+        success: false,
+        message:
+          "You are not allowed to scan shipments.",
+      });
+    }
+
+    let trackingNumber =
+      String(
+        req.body?.trackingNumber || ""
+      ).trim();
+
+    if (!trackingNumber) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Tracking number is required.",
+      });
+    }
+
+    // ========================================================
+    // SUPPORT QR URL
+    // ========================================================
+
+    try {
+      if (
+        trackingNumber.startsWith("http://") ||
+        trackingNumber.startsWith("https://")
+      ) {
+        const url =
+          new URL(trackingNumber);
+
+        const parts =
+          url.pathname
+            .split("/")
+            .filter(Boolean);
+
+        const trackIndex =
+          parts.findIndex(
+            (part) =>
+              part.toLowerCase() ===
+              "track"
+          );
+
+        if (
+          trackIndex !== -1 &&
+          parts[trackIndex + 1]
+        ) {
+          trackingNumber =
+            decodeURIComponent(
+              parts[trackIndex + 1]
+            );
+        }
+      }
+    } catch {
+      // Keep original scanner value.
+    }
+
+    // ========================================================
+    // FIND SHIPMENT
+    // ========================================================
+
+    const shipment =
+      await prisma.shipment.findUnique({
+        where: {
+          trackingNumber,
+        },
+
+        include:
+          shipmentInclude,
+      });
+
+    if (!shipment) {
+      return res.status(404).json({
+        success: false,
+        message:
+          `Shipment ${trackingNumber} was not found.`,
+      });
+    }
+
+    // ========================================================
+    // GET RIDER ID
+    // ========================================================
+
+    let riderId = null;
+
+    if (role === "RIDER") {
+      if (req.user?.rider?.id) {
+        riderId =
+          Number(req.user.rider.id);
+      }
+
+      if (req.user?.riderId) {
+        riderId =
+          Number(req.user.riderId);
+      }
+
+      if (!riderId && req.user?.id) {
+        const rider =
+          await prisma.rider.findUnique({
+            where: {
+              userId:
+                Number(req.user.id),
+            },
+
+            select: {
+              id: true,
+            },
+          });
+
+        riderId =
+          rider?.id ?? null;
+      }
+    }
+
+    // ========================================================
+    // ALLOWED ACTIONS
+    // ========================================================
+
+    const actions = [];
+
+    const status =
+      shipment.status;
+
+    // ========================================================
+    // ADMIN
+    // ========================================================
+
+    if (role === "ADMIN") {
+      if (status === "CREATED") {
+        actions.push("RECEIVE");
+      }
+
+      if (status === "IN_WAREHOUSE") {
+        actions.push("ASSIGN_RIDER");
+      }
+
+      if (status === "ASSIGNED_TO_RIDER") {
+        actions.push("PICKUP");
+        actions.push("OUT_FOR_DELIVERY");
+      }
+
+      if (status === "OUT_FOR_DELIVERY") {
+        actions.push("DELIVER");
+        actions.push("REQUEST_RETURN");
+      }
+
+      if (status === "RETURN_REQUESTED") {
+        actions.push(
+          "ASSIGN_RETURN_RIDER"
+        );
+      }
+
+      if (
+        status ===
+        "RETURN_ASSIGNED_TO_RIDER"
+      ) {
+        actions.push(
+          "RETURN_PICKUP"
+        );
+      }
+
+      if (
+        status ===
+        "RETURN_PICKED_UP_FROM_CUSTOMER"
+      ) {
+        actions.push(
+          "RETURN_TO_WAREHOUSE"
+        );
+      }
+
+      if (
+        status ===
+        "RETURN_IN_WAREHOUSE"
+      ) {
+        actions.push(
+          "OUT_FOR_RETURN"
+        );
+      }
+
+      if (status === "OUT_FOR_RETURN") {
+        actions.push(
+          "RETURNED_TO_VENDOR"
+        );
+      }
+    }
+
+    // ========================================================
+    // STAFF
+    // ========================================================
+
+    if (role === "STAFF") {
+      if (status === "CREATED") {
+        actions.push("RECEIVE");
+      }
+
+      if (status === "IN_WAREHOUSE") {
+        actions.push("ASSIGN_RIDER");
+      }
+
+      if (
+        status ===
+        "RETURN_IN_WAREHOUSE"
+      ) {
+        actions.push(
+          "ASSIGN_RETURN_RIDER"
+        );
+      }
+    }
+
+    // ========================================================
+    // RIDER
+    // ========================================================
+
+    if (role === "RIDER") {
+      const isAssigned =
+        riderId &&
+        shipment.riderId === riderId;
+
+      if (isAssigned) {
+        if (
+          status ===
+          "ASSIGNED_TO_RIDER"
+        ) {
+          actions.push("PICKUP");
+        }
+
+        if (
+          status ===
+          "OUT_FOR_DELIVERY"
+        ) {
+          actions.push("DELIVER");
+          actions.push(
+            "REQUEST_RETURN"
+          );
+        }
+
+        if (
+          status ===
+          "RETURN_ASSIGNED_TO_RIDER"
+        ) {
+          actions.push(
+            "RETURN_PICKUP"
+          );
+        }
+
+        if (
+          status ===
+          "RETURN_PICKED_UP_FROM_CUSTOMER"
+        ) {
+          actions.push(
+            "RETURN_TO_WAREHOUSE"
+          );
+        }
+      }
+    }
+
+    // ========================================================
+    // RESPONSE
+    // ========================================================
+
+    return res.status(200).json({
+      success: true,
+
+      shipment: {
+        id:
+          shipment.id,
+
+        trackingNumber:
+          shipment.trackingNumber,
+
+        status:
+          shipment.status,
+
+        senderName:
+          shipment.senderName,
+
+        senderPhone:
+          shipment.senderPhone,
+
+        senderAddress:
+          shipment.senderAddress,
+
+        receiverName:
+          shipment.receiverName,
+
+        receiverPhone:
+          shipment.receiverPhone,
+
+        receiverAddress:
+          shipment.receiverAddress,
+
+        packageType:
+          shipment.packageType,
+
+        weight:
+          shipment.weight,
+
+        paymentType:
+          shipment.paymentType,
+
+        codAmount:
+          shipment.codAmount,
+
+        shippingCharge:
+          shipment.shippingCharge,
+
+        notes:
+          shipment.notes,
+
+        vendor:
+          shipment.vendor
+            ? {
+                id:
+                  shipment.vendor.id,
+
+                companyName:
+                  shipment.vendor.companyName,
+
+                contactId:
+                  shipment.vendor.contactId,
+
+                location:
+                  shipment.vendor.location,
+              }
+            : null,
+
+        rider:
+          shipment.rider
+            ? {
+                id:
+                  shipment.rider.id,
+
+                name:
+                  shipment.rider.user?.name ||
+                  shipment.rider.phone,
+
+                phone:
+                  shipment.rider.phone,
+              }
+            : null,
+
+        trackings:
+          shipment.trackings,
+
+        codCollection:
+          shipment.codCollection,
+      },
+
+      currentUser: {
+        role,
+        riderId,
+      },
+
+      actions,
+    });
+  } catch (error) {
+    console.error(
+      "SCAN SHIPMENT ERROR:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+
+      message:
+        error?.message ||
+        "Failed to scan shipment.",
+    });
+  }
+};
+
+// ============================================================
+// SCAN ACTION
+//
+// POST /api/shipment/scan/action
+//
+// Body:
+//
+// {
+//   trackingNumber: "RC-1789981579523-622",
+//   action: "RECEIVE",
+//   location: "Main Warehouse",
+//   notes: ""
+// }
+//
+// IMPORTANT:
+// This endpoint does NOT accept arbitrary status.
+// The server decides the next status.
+// ============================================================
+
+export const scanShipmentAction = async (
+  req,
+  res
+) => {
+  try {
+    const role =
+      getUserRole(req);
+
+    // ========================================================
+    // AUTH
+    // ========================================================
+
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        message:
+          "Authentication required.",
+      });
+    }
+
+    if (
+      ![
+        "ADMIN",
+        "STAFF",
+        "RIDER",
+      ].includes(role)
+    ) {
+      return res.status(403).json({
+        success: false,
+        message:
+          "You are not allowed to perform scan actions.",
+      });
+    }
+
+    // ========================================================
+    // BODY
+    // ========================================================
+
+    let trackingNumber =
+      String(
+        req.body?.trackingNumber || ""
+      ).trim();
+
+    const action =
+      String(
+        req.body?.action || ""
+      )
+        .trim()
+        .toUpperCase();
+
+    const location =
+      String(
+        req.body?.location || ""
+      ).trim() ||
+      "Main Warehouse";
+
+    const notes =
+      String(
+        req.body?.notes || ""
+      ).trim() || null;
+
+    // ========================================================
+    // VALIDATION
+    // ========================================================
+
+    if (!trackingNumber) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Tracking number is required.",
+      });
+    }
+
+    if (!action) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Action is required.",
+      });
+    }
+
+    // ========================================================
+    // SUPPORT QR URL HERE TOO
+    //
+    // This makes the action endpoint safe even if the
+    // frontend accidentally sends the full QR URL.
+    // ========================================================
+
+    try {
+      if (
+        trackingNumber.startsWith(
+          "http://"
+        ) ||
+        trackingNumber.startsWith(
+          "https://"
+        )
+      ) {
+        const url =
+          new URL(trackingNumber);
+
+        const parts =
+          url.pathname
+            .split("/")
+            .filter(Boolean);
+
+        const trackIndex =
+          parts.findIndex(
+            (part) =>
+              part.toLowerCase() ===
+              "track"
+          );
+
+        if (
+          trackIndex !== -1 &&
+          parts[trackIndex + 1]
+        ) {
+          trackingNumber =
+            decodeURIComponent(
+              parts[
+                trackIndex + 1
+              ]
+            );
+        }
+      }
+    } catch {
+      // Keep original value.
+    }
+
+    // ========================================================
+    // FIND SHIPMENT
+    // ========================================================
+
+    const shipment =
+      await prisma.shipment.findUnique({
+        where: {
+          trackingNumber,
+        },
+
+        include: {
+          vendor: true,
+
+          codCollection: true,
+
+          rider: {
+            include: {
+              user: true,
+            },
+          },
+        },
+      });
+
+    if (!shipment) {
+      return res.status(404).json({
+        success: false,
+        message:
+          `Shipment ${trackingNumber} was not found.`,
+      });
+    }
+
+    // ========================================================
+    // GET RIDER ID
+    // ========================================================
+
+    let riderId = null;
+
+    if (role === "RIDER") {
+      if (req.user?.rider?.id) {
+        riderId =
+          Number(req.user.rider.id);
+      }
+
+      if (req.user?.riderId) {
+        riderId =
+          Number(req.user.riderId);
+      }
+
+      if (!riderId && req.user?.id) {
+        const rider =
+          await prisma.rider.findUnique({
+            where: {
+              userId:
+                Number(req.user.id),
+            },
+
+            select: {
+              id: true,
+            },
+          });
+
+        riderId =
+          rider?.id ?? null;
+      }
+
+      if (!riderId) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Rider profile not found.",
+        });
+      }
+    }
+
+    // ========================================================
+    // RIDER SECURITY
+    // ========================================================
+
+    if (
+      role === "RIDER" &&
+      shipment.riderId !== riderId
+    ) {
+      return res.status(403).json({
+        success: false,
+        message:
+          "This shipment is not assigned to you.",
+      });
+    }
+
+    // ========================================================
+    // CURRENT STATUS
+    // ========================================================
+
+    const previousStatus =
+      shipment.status;
+
+    let newStatus = null;
+
+    // ========================================================
+    // RECEIVE
+    // CREATED -> IN_WAREHOUSE
+    // ========================================================
+
+    if (action === "RECEIVE") {
+      if (
+        ![
+          "STAFF",
+          "ADMIN",
+        ].includes(role)
+      ) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Only staff or admin can receive shipments.",
+        });
+      }
+
+      if (
+        previousStatus !==
+        "CREATED"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            `Shipment cannot be received from ${previousStatus}.`,
+        });
+      }
+
+      newStatus =
+        "IN_WAREHOUSE";
+    }
+
+    // ========================================================
+    // PICKUP
+    // ASSIGNED_TO_RIDER -> OUT_FOR_DELIVERY
+    // ========================================================
+
+    else if (
+      action === "PICKUP"
+    ) {
+      if (role !== "RIDER") {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Only rider can pickup shipment.",
+        });
+      }
+
+      if (
+        previousStatus !==
+        "ASSIGNED_TO_RIDER"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Shipment is not waiting for rider pickup.",
+        });
+      }
+
+      newStatus =
+        "OUT_FOR_DELIVERY";
+    }
+
+    // ========================================================
+    // OUT FOR DELIVERY
+    // ASSIGNED_TO_RIDER -> OUT_FOR_DELIVERY
+    // ========================================================
+
+    else if (
+      action ===
+      "OUT_FOR_DELIVERY"
+    ) {
+      if (
+        ![
+          "RIDER",
+          "ADMIN",
+        ].includes(role)
+      ) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "You are not allowed to send shipment out for delivery.",
+        });
+      }
+
+      if (
+        previousStatus !==
+        "ASSIGNED_TO_RIDER"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Shipment must be assigned to rider first.",
+        });
+      }
+
+      newStatus =
+        "OUT_FOR_DELIVERY";
+    }
+
+    // ========================================================
+    // DELIVER
+    // OUT_FOR_DELIVERY -> DELIVERED
+    // ========================================================
+
+    else if (
+      action === "DELIVER"
+    ) {
+      if (
+        ![
+          "RIDER",
+          "ADMIN",
+        ].includes(role)
+      ) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Only rider or admin can deliver shipment.",
+        });
+      }
+
+      if (
+        previousStatus !==
+        "OUT_FOR_DELIVERY"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Shipment is not out for delivery.",
+        });
+      }
+
+      newStatus =
+        "DELIVERED";
+    }
+
+    // ========================================================
+    // REQUEST RETURN
+    // OUT_FOR_DELIVERY -> RETURN_REQUESTED
+    // ========================================================
+
+    else if (
+      action ===
+      "REQUEST_RETURN"
+    ) {
+      if (
+        ![
+          "RIDER",
+          "ADMIN",
+        ].includes(role)
+      ) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "You are not allowed to request return.",
+        });
+      }
+
+      if (
+        previousStatus !==
+        "OUT_FOR_DELIVERY"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Return can only be requested while out for delivery.",
+        });
+      }
+
+      newStatus =
+        "RETURN_REQUESTED";
+    }
+
+    // ========================================================
+    // ASSIGN RETURN RIDER
+    // ========================================================
+
+    else if (
+      action ===
+      "ASSIGN_RETURN_RIDER"
+    ) {
+      if (
+        ![
+          "STAFF",
+          "ADMIN",
+        ].includes(role)
+      ) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Only staff or admin can assign return rider.",
+        });
+      }
+
+      if (
+        previousStatus !==
+        "RETURN_REQUESTED"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Shipment does not have a pending return request.",
+        });
+      }
+
+      return res.status(400).json({
+        success: false,
+        message:
+          "Use the existing assign-rider API to select the return rider.",
+      });
+    }
+
+    // ========================================================
+    // RETURN PICKUP
+    // RETURN_ASSIGNED_TO_RIDER
+    // -> RETURN_PICKED_UP_FROM_CUSTOMER
+    // ========================================================
+
+    else if (
+      action ===
+      "RETURN_PICKUP"
+    ) {
+      if (role !== "RIDER") {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Only rider can pickup return.",
+        });
+      }
+
+      if (
+        previousStatus !==
+        "RETURN_ASSIGNED_TO_RIDER"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Return is not assigned to rider.",
+        });
+      }
+
+      newStatus =
+        "RETURN_PICKED_UP_FROM_CUSTOMER";
+    }
+
+    // ========================================================
+    // RETURN TO WAREHOUSE
+    // ========================================================
+
+    else if (
+      action ===
+      "RETURN_TO_WAREHOUSE"
+    ) {
+      if (
+        ![
+          "RIDER",
+          "ADMIN",
+        ].includes(role)
+      ) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Only rider or admin can return shipment to warehouse.",
+        });
+      }
+
+      if (
+        previousStatus !==
+        "RETURN_PICKED_UP_FROM_CUSTOMER"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Shipment has not been picked up for return.",
+        });
+      }
+
+      newStatus =
+        "RETURN_IN_WAREHOUSE";
+    }
+
+    // ========================================================
+    // OUT FOR RETURN
+    // RETURN_IN_WAREHOUSE -> OUT_FOR_RETURN
+    // ========================================================
+
+    else if (
+      action ===
+      "OUT_FOR_RETURN"
+    ) {
+      if (
+        ![
+          "STAFF",
+          "ADMIN",
+        ].includes(role)
+      ) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Only staff or admin can send return shipment.",
+        });
+      }
+
+      if (
+        previousStatus !==
+        "RETURN_IN_WAREHOUSE"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Return shipment is not in warehouse.",
+        });
+      }
+
+      newStatus =
+        "OUT_FOR_RETURN";
+    }
+
+    // ========================================================
+    // RETURNED TO VENDOR
+    // OUT_FOR_RETURN -> RETURNED_TO_VENDOR
+    // ========================================================
+
+    else if (
+      action ===
+      "RETURNED_TO_VENDOR"
+    ) {
+      if (
+        ![
+          "STAFF",
+          "ADMIN",
+        ].includes(role)
+      ) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Only staff or admin can complete return.",
+        });
+      }
+
+      if (
+        previousStatus !==
+        "OUT_FOR_RETURN"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Shipment is not out for return.",
+        });
+      }
+
+      newStatus =
+        "RETURNED_TO_VENDOR";
+    }
+
+    // ========================================================
+    // UNSUPPORTED ACTION
+    // ========================================================
+
+    else {
+      return res.status(400).json({
+        success: false,
+        message:
+          `Unsupported scan action: ${action}`,
+      });
+    }
+
+    // ========================================================
+    // TRANSACTION
+    // ========================================================
+
+    const updatedShipment =
+      await prisma.$transaction(
+        async (tx) => {
+          // ==================================================
+          // UPDATE SHIPMENT
+          // ==================================================
+
+          const updated =
+            await tx.shipment.update({
+              where: {
+                id:
+                  shipment.id,
+              },
+
+              data: {
+                status:
+                  newStatus,
+              },
+
+              include:
+                shipmentInclude,
+            });
+
+          // ==================================================
+          // TRACKING
+          // ==================================================
+
+          await tx.tracking.create({
+            data: {
+              shipmentId:
+                shipment.id,
+
+              status:
+                newStatus,
+
+              location,
+
+              message:
+                notes ||
+                `Shipment scanned. Action: ${action.replaceAll(
+                  "_",
+                  " "
+                )}.`,
+
+              createdBy:
+                String(
+                  req.user?.id ||
+                  role
+                ),
+            },
+          });
+
+          // ==================================================
+          // IMPORTANT:
+          // NO shipmentScan.create()
+          //
+          // Your Prisma schema does not have a
+          // ShipmentScan model.
+          //
+          // Tracking already records the status history.
+          // ==================================================
+
+          // ==================================================
+          // COD
+          // ==================================================
+
+          if (
+            newStatus ===
+              "DELIVERED" &&
+            shipment.paymentType ===
+              "COD" &&
+            Number(
+              shipment.codAmount
+            ) > 0
+          ) {
+            if (shipment.vendorId) {
+              // --------------------------------------------
+              // EXISTING COD COLLECTION
+              // --------------------------------------------
+
+              if (
+                shipment.codCollection
+              ) {
+                await tx.codCollection.update({
+                  where: {
+                    id:
+                      shipment
+                        .codCollection
+                        .id,
+                  },
+
+                  data: {
+                    status:
+                      "COLLECTED",
+
+                    collectedAt:
+                      new Date(),
+
+                    riderId:
+                      riderId ||
+                      shipment.riderId ||
+                      null,
+                  },
+                });
+              }
+
+              // --------------------------------------------
+              // CREATE COD COLLECTION
+              // --------------------------------------------
+
+              else {
+                await tx.codCollection.create({
+                  data: {
+                    shipmentId:
+                      shipment.id,
+
+                    amount:
+                      shipment.codAmount,
+
+                    status:
+                      "COLLECTED",
+
+                    collectedAt:
+                      new Date(),
+
+                    riderId:
+                      riderId ||
+                      shipment.riderId ||
+                      null,
+                  },
+                });
+              }
+
+              // --------------------------------------------
+              // AVOID DUPLICATE COD ACCOUNTING
+              // --------------------------------------------
+
+              const existingCodEntry =
+                await tx.accountingEntry.findFirst({
+                  where: {
+                    shipmentId:
+                      shipment.id,
+
+                    type:
+                      "COD_COLLECTION",
+                  },
+                });
+
+              if (
+                !existingCodEntry
+              ) {
+                await tx.accountingEntry.create({
+                  data: {
+                    vendorId:
+                      shipment.vendorId,
+
+                    shipmentId:
+                      shipment.id,
+
+                    type:
+                      "COD_COLLECTION",
+
+                    direction:
+                      "CREDIT",
+
+                    amount:
+                      shipment.codAmount,
+
+                    description:
+                      `COD collected for shipment ${shipment.trackingNumber}`,
+                  },
+                });
+              }
+            }
+          }
+
+          // ==================================================
+          // NOTIFICATION
+          // ==================================================
+
+          await tx.notification.create({
+            data: {
+              shipmentId:
+                shipment.id,
+
+              title:
+                "Shipment Scanned",
+
+              message:
+                `${shipment.trackingNumber} changed from ${previousStatus} to ${newStatus}.`,
+            },
+          });
+
+          return updated;
+        },
+
+        {
+          timeout: 15000,
+          maxWait: 10000,
+        }
+      );
+
+    // ========================================================
+    // RESPONSE
+    // ========================================================
+
+    return res.status(200).json({
+      success: true,
+
+      message:
+        `${action.replaceAll(
+          "_",
+          " "
+        )} completed successfully.`,
+
+      shipment:
+        updatedShipment,
+    });
+  } catch (error) {
+    console.error(
+      "SCAN ACTION ERROR:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+
+      message:
+        error?.message ||
+        "Failed to process scan action.",
+    });
+  }
+};
+
+// ============================================================
+// GET MY SHIPMENTS
+//
+// GET /api/shipment/my
+// ============================================================
+
+export const getMyShipments = async (
+  req,
+  res
+) => {
+  try {
+    const role =
+      getUserRole(req);
+
+    if (!req.user) {
+      return res.status(401).json({
+        message:
+          "Authentication required.",
       });
     }
 
@@ -912,7 +2096,8 @@ export const getMyShipments = async (req, res) => {
           shipmentInclude,
 
         orderBy: {
-          createdAt: "desc",
+          createdAt:
+            "desc",
         },
       });
 
@@ -939,9 +2124,13 @@ export const getMyShipments = async (req, res) => {
 // GET /api/shipment/all
 // ============================================================
 
-export const getAllShipments = async (req, res) => {
+export const getAllShipments = async (
+  req,
+  res
+) => {
   try {
-    const role = getUserRole(req);
+    const role =
+      getUserRole(req);
 
     if (
       role !== "ADMIN" &&
@@ -959,7 +2148,8 @@ export const getAllShipments = async (req, res) => {
           shipmentInclude,
 
         orderBy: {
-          createdAt: "desc",
+          createdAt:
+            "desc",
         },
       });
 
@@ -986,84 +2176,97 @@ export const getAllShipments = async (req, res) => {
 // GET /api/shipment/rider/my
 // ============================================================
 
-export const getMyRiderShipments = async (
-  req,
-  res
-) => {
-  try {
-    const role = getUserRole(req);
+export const getMyRiderShipments =
+  async (
+    req,
+    res
+  ) => {
+    try {
+      const role =
+        getUserRole(req);
 
-    if (role !== "RIDER") {
-      return res.status(403).json({
+      if (role !== "RIDER") {
+        return res.status(403).json({
+          message:
+            "Only riders can access rider shipments.",
+        });
+      }
+
+      const riderId =
+        await (async () => {
+          if (req.user?.rider?.id) {
+            return Number(
+              req.user.rider.id
+            );
+          }
+
+          if (req.user?.riderId) {
+            return Number(
+              req.user.riderId
+            );
+          }
+
+          if (req.user?.id) {
+            const rider =
+              await prisma.rider.findUnique({
+                where: {
+                  userId:
+                    Number(
+                      req.user.id
+                    ),
+                },
+
+                select: {
+                  id: true,
+                },
+              });
+
+            return (
+              rider?.id ?? null
+            );
+          }
+
+          return null;
+        })();
+
+      if (!riderId) {
+        return res.status(404).json({
+          message:
+            "Rider profile not found.",
+        });
+      }
+
+      const shipments =
+        await prisma.shipment.findMany({
+          where: {
+            riderId,
+          },
+
+          include:
+            shipmentInclude,
+
+          orderBy: {
+            createdAt:
+              "desc",
+          },
+        });
+
+      return res.status(200).json({
+        shipments,
+      });
+    } catch (error) {
+      console.error(
+        "GET MY RIDER SHIPMENTS ERROR:",
+        error
+      );
+
+      return res.status(500).json({
         message:
-          "Only riders can access rider shipments.",
+          error?.message ||
+          "Failed to get rider shipments.",
       });
     }
-
-    const riderId = await (async () => {
-      if (req.user?.rider?.id) {
-        return Number(req.user.rider.id);
-      }
-
-      if (req.user?.riderId) {
-        return Number(req.user.riderId);
-      }
-
-      if (req.user?.id) {
-        const rider =
-          await prisma.rider.findUnique({
-            where: {
-              userId: Number(req.user.id),
-            },
-
-            select: {
-              id: true,
-            },
-          });
-
-        return rider?.id ?? null;
-      }
-
-      return null;
-    })();
-
-    if (!riderId) {
-      return res.status(404).json({
-        message:
-          "Rider profile not found.",
-      });
-    }
-
-    const shipments =
-      await prisma.shipment.findMany({
-        where: {
-          riderId,
-        },
-
-        include:
-          shipmentInclude,
-
-        orderBy: {
-          createdAt: "desc",
-        },
-      });
-
-    return res.status(200).json({
-      shipments,
-    });
-  } catch (error) {
-    console.error(
-      "GET MY RIDER SHIPMENTS ERROR:",
-      error
-    );
-
-    return res.status(500).json({
-      message:
-        error?.message ||
-        "Failed to get rider shipments.",
-    });
-  }
-};
+  };
 
 // ============================================================
 // GET SHIPMENT BY TRACKING NUMBER
@@ -1072,11 +2275,15 @@ export const getMyRiderShipments = async (
 // ============================================================
 
 export const getShipmentByTracking =
-  async (req, res) => {
+  async (
+    req,
+    res
+  ) => {
     try {
       const trackingNumber =
         String(
-          req.params.trackingNumber || ""
+          req.params
+            .trackingNumber || ""
         ).trim();
 
       if (!trackingNumber) {
@@ -1126,45 +2333,48 @@ export const getShipmentByTracking =
 // GET /api/shipment/:id
 // ============================================================
 
-export const getShipment = async (
-  req,
-  res
-) => {
-  try {
-    const shipment =
-      await prisma.shipment.findUnique({
-        where: {
-          id:
-            String(req.params.id),
-        },
+export const getShipment =
+  async (
+    req,
+    res
+  ) => {
+    try {
+      const shipment =
+        await prisma.shipment.findUnique({
+          where: {
+            id:
+              String(
+                req.params.id
+              ),
+          },
 
-        include:
-          shipmentInclude,
-      });
+          include:
+            shipmentInclude,
+        });
 
-    if (!shipment) {
-      return res.status(404).json({
+      if (!shipment) {
+        return res.status(404).json({
+          message:
+            "Shipment not found.",
+        });
+      }
+
+      return res.status(200).json(
+        shipment
+      );
+    } catch (error) {
+      console.error(
+        "GET SHIPMENT ERROR:",
+        error
+      );
+
+      return res.status(500).json({
         message:
-          "Shipment not found.",
+          error?.message ||
+          "Failed to get shipment.",
       });
     }
-
-    return res.status(200).json(
-      shipment
-    );
-  } catch (error) {
-    console.error(
-      "GET SHIPMENT ERROR:",
-      error
-    );
-
-    return res.status(500).json({
-      message:
-        error?.message ||
-        "Failed to get shipment.",
-    });
-  }
-};
+  };
 
 // ============================================================
 // UPDATE SHIPMENT
@@ -1173,7 +2383,10 @@ export const getShipment = async (
 // ============================================================
 
 export const updateShipment =
-  async (req, res) => {
+  async (
+    req,
+    res
+  ) => {
     try {
       const {
         receiverName,
@@ -1191,53 +2404,81 @@ export const updateShipment =
         await prisma.shipment.update({
           where: {
             id:
-              String(req.params.id),
+              String(
+                req.params.id
+              ),
           },
 
           data: {
-            ...(receiverName !== undefined && {
+            ...(receiverName !==
+              undefined && {
               receiverName:
-                String(receiverName).trim(),
+                String(
+                  receiverName
+                ).trim(),
             }),
 
-            ...(receiverPhone !== undefined && {
+            ...(receiverPhone !==
+              undefined && {
               receiverPhone:
-                String(receiverPhone).trim(),
+                String(
+                  receiverPhone
+                ).trim(),
             }),
 
-            ...(receiverAddress !== undefined && {
+            ...(receiverAddress !==
+              undefined && {
               receiverAddress:
-                String(receiverAddress).trim(),
+                String(
+                  receiverAddress
+                ).trim(),
             }),
 
-            ...(packageType !== undefined && {
+            ...(packageType !==
+              undefined && {
               packageType:
-                normalizeUpper(packageType),
+                normalizeUpper(
+                  packageType
+                ),
             }),
 
-            ...(weight !== undefined && {
+            ...(weight !==
+              undefined && {
               weight:
                 Number(weight),
             }),
 
-            ...(shippingCharge !== undefined && {
+            ...(shippingCharge !==
+              undefined && {
               shippingCharge:
-                Number(shippingCharge),
+                Number(
+                  shippingCharge
+                ),
             }),
 
-            ...(codAmount !== undefined && {
+            ...(codAmount !==
+              undefined && {
               codAmount:
-                Number(codAmount),
+                Number(
+                  codAmount
+                ),
             }),
 
-            ...(notes !== undefined && {
+            ...(notes !==
+              undefined && {
               notes:
-                String(notes || "").trim() || null,
+                String(
+                  notes || ""
+                ).trim() ||
+                null,
             }),
 
-            ...(status !== undefined && {
+            ...(status !==
+              undefined && {
               status:
-                normalizeUpper(status),
+                normalizeUpper(
+                  status
+                ),
             }),
           },
 
@@ -1271,284 +2512,302 @@ export const updateShipment =
 // PATCH /api/shipment/:id/status
 // ============================================================
 
-export const updateStatus = async (
-  req,
-  res
-) => {
-  try {
-    const shipmentId =
-      String(req.params.id);
+export const updateStatus =
+  async (
+    req,
+    res
+  ) => {
+    try {
+      const shipmentId =
+        String(
+          req.params.id
+        );
 
-    const {
-      status,
-      location,
-      message,
-    } = req.body;
+      const {
+        status,
+        location,
+        message,
+      } = req.body;
 
-    const role = getUserRole(req);
+      const role =
+        getUserRole(req);
 
-    if (
-      ![
-        "ADMIN",
-        "STAFF",
-        "RIDER",
-      ].includes(role)
-    ) {
-      return res.status(403).json({
-        message:
-          "You are not allowed to update shipment status.",
-      });
-    }
+      if (
+        ![
+          "ADMIN",
+          "STAFF",
+          "RIDER",
+        ].includes(role)
+      ) {
+        return res.status(403).json({
+          message:
+            "You are not allowed to update shipment status.",
+        });
+      }
 
-    const allowedStatuses = [
-      "CREATED",
-      "IN_WAREHOUSE",
-      "ASSIGNED_TO_RIDER",
-      "OUT_FOR_DELIVERY",
-      "DELIVERED",
-      "RETURN_REQUESTED",
-      "RETURN_ASSIGNED_TO_RIDER",
-      "RETURN_PICKED_UP_FROM_CUSTOMER",
-      "RETURN_IN_WAREHOUSE",
-      "OUT_FOR_RETURN",
-      "RETURNED_TO_VENDOR",
-      "CANCELLED",
-    ];
+      const allowedStatuses = [
+        "CREATED",
+        "IN_WAREHOUSE",
+        "ASSIGNED_TO_RIDER",
+        "OUT_FOR_DELIVERY",
+        "DELIVERED",
+        "RETURN_REQUESTED",
+        "RETURN_ASSIGNED_TO_RIDER",
+        "RETURN_PICKED_UP_FROM_CUSTOMER",
+        "RETURN_IN_WAREHOUSE",
+        "OUT_FOR_RETURN",
+        "RETURNED_TO_VENDOR",
+        "CANCELLED",
+      ];
 
-    if (!status) {
-      return res.status(400).json({
-        message:
-          "Status is required.",
-      });
-    }
+      if (!status) {
+        return res.status(400).json({
+          message:
+            "Status is required.",
+        });
+      }
 
-    if (!allowedStatuses.includes(status)) {
-      return res.status(400).json({
-        message:
-          "Invalid shipment status.",
-        allowedStatuses,
-      });
-    }
+      if (
+        !allowedStatuses.includes(
+          status
+        )
+      ) {
+        return res.status(400).json({
+          message:
+            "Invalid shipment status.",
 
-    const existingShipment =
-      await prisma.shipment.findUnique({
-        where: {
-          id: shipmentId,
-        },
+          allowedStatuses,
+        });
+      }
 
-        include: {
-          vendor: true,
-          codCollection: true,
-        },
-      });
-
-    if (!existingShipment) {
-      return res.status(404).json({
-        message:
-          "Shipment not found.",
-      });
-    }
-
-    await prisma.$transaction(
-      async (tx) => {
-        // ==================================================
-        // UPDATE SHIPMENT
-        // ==================================================
-
-        await tx.shipment.update({
+      const existingShipment =
+        await prisma.shipment.findUnique({
           where: {
             id:
               shipmentId,
           },
 
-          data: {
-            status,
+          include: {
+            vendor: true,
+            codCollection: true,
           },
         });
 
-        // ==================================================
-        // TRACKING
-        // ==================================================
-
-        await tx.tracking.create({
-          data: {
-            shipmentId:
-              existingShipment.id,
-
-            status,
-
-            location:
-              String(location || "").trim() ||
-              "Main Office",
-
-            message:
-              String(message || "").trim() ||
-              `Shipment status changed to ${status}`,
-          },
+      if (!existingShipment) {
+        return res.status(404).json({
+          message:
+            "Shipment not found.",
         });
-
-        // ==================================================
-        // COD
-        // ==================================================
-
-        if (
-          status === "DELIVERED" &&
-          existingShipment.paymentType === "COD" &&
-          Number(existingShipment.codAmount) > 0 &&
-          existingShipment.vendorId
-        ) {
-          // ------------------------------------------------
-          // COLLECTION
-          // ------------------------------------------------
-
-          const existingCollection =
-            await tx.codCollection.findUnique({
-              where: {
-                shipmentId:
-                  existingShipment.id,
-              },
-            });
-
-          if (!existingCollection) {
-            await tx.codCollection.create({
-              data: {
-                shipmentId:
-                  existingShipment.id,
-
-                amount:
-                  existingShipment.codAmount,
-
-                status:
-                  "COLLECTED",
-
-                collectedAt:
-                  new Date(),
-              },
-            });
-          } else if (
-            existingCollection.status !==
-            "COLLECTED"
-          ) {
-            await tx.codCollection.update({
-              where: {
-                shipmentId:
-                  existingShipment.id,
-              },
-
-              data: {
-                amount:
-                  existingShipment.codAmount,
-
-                status:
-                  "COLLECTED",
-
-                collectedAt:
-                  new Date(),
-              },
-            });
-          }
-
-          // ------------------------------------------------
-          // ACCOUNTING
-          // ------------------------------------------------
-
-          const existingCodEntry =
-            await tx.accountingEntry.findFirst({
-              where: {
-                shipmentId:
-                  existingShipment.id,
-
-                type:
-                  "COD_COLLECTION",
-              },
-            });
-
-          if (!existingCodEntry) {
-            await tx.accountingEntry.create({
-              data: {
-                vendorId:
-                  existingShipment.vendorId,
-
-                shipmentId:
-                  existingShipment.id,
-
-                type:
-                  "COD_COLLECTION",
-
-                direction:
-                  "CREDIT",
-
-                amount:
-                  existingShipment.codAmount,
-
-                description:
-                  `COD collected for shipment ${existingShipment.trackingNumber}`,
-              },
-            });
-          }
-        }
-
-        // ==================================================
-        // NOTIFICATION
-        // ==================================================
-
-        await tx.notification.create({
-          data: {
-            shipmentId:
-              existingShipment.id,
-
-            title:
-              "Shipment Status Updated",
-
-            message:
-              `Shipment ${existingShipment.trackingNumber} is now ${status.replaceAll(
-                "_",
-                " "
-              )}.`,
-          },
-        });
-      },
-
-      {
-        timeout: 15000,
-        maxWait: 10000,
       }
-    );
 
-    // ========================================================
-    // GET UPDATED SHIPMENT
-    // ========================================================
+      await prisma.$transaction(
+        async (tx) => {
+          // ==================================================
+          // UPDATE SHIPMENT
+          // ==================================================
 
-    const shipment =
-      await prisma.shipment.findUnique({
-        where: {
-          id:
-            shipmentId,
+          await tx.shipment.update({
+            where: {
+              id:
+                shipmentId,
+            },
+
+            data: {
+              status,
+            },
+          });
+
+          // ==================================================
+          // TRACKING
+          // ==================================================
+
+          await tx.tracking.create({
+            data: {
+              shipmentId:
+                existingShipment.id,
+
+              status,
+
+              location:
+                String(
+                  location || ""
+                ).trim() ||
+                "Main Office",
+
+              message:
+                String(
+                  message || ""
+                ).trim() ||
+                `Shipment status changed to ${status}`,
+            },
+          });
+
+          // ==================================================
+          // COD
+          // ==================================================
+
+          if (
+            status ===
+              "DELIVERED" &&
+            existingShipment.paymentType ===
+              "COD" &&
+            Number(
+              existingShipment.codAmount
+            ) > 0 &&
+            existingShipment.vendorId
+          ) {
+            // ----------------------------------------------
+            // COLLECTION
+            // ----------------------------------------------
+
+            const existingCollection =
+              await tx.codCollection.findUnique({
+                where: {
+                  shipmentId:
+                    existingShipment.id,
+                },
+              });
+
+            if (!existingCollection) {
+              await tx.codCollection.create({
+                data: {
+                  shipmentId:
+                    existingShipment.id,
+
+                  amount:
+                    existingShipment.codAmount,
+
+                  status:
+                    "COLLECTED",
+
+                  collectedAt:
+                    new Date(),
+                },
+              });
+            } else if (
+              existingCollection.status !==
+              "COLLECTED"
+            ) {
+              await tx.codCollection.update({
+                where: {
+                  shipmentId:
+                    existingShipment.id,
+                },
+
+                data: {
+                  amount:
+                    existingShipment.codAmount,
+
+                  status:
+                    "COLLECTED",
+
+                  collectedAt:
+                    new Date(),
+                },
+              });
+            }
+
+            // ----------------------------------------------
+            // ACCOUNTING
+            // ----------------------------------------------
+
+            const existingCodEntry =
+              await tx.accountingEntry.findFirst({
+                where: {
+                  shipmentId:
+                    existingShipment.id,
+
+                  type:
+                    "COD_COLLECTION",
+                },
+              });
+
+            if (!existingCodEntry) {
+              await tx.accountingEntry.create({
+                data: {
+                  vendorId:
+                    existingShipment.vendorId,
+
+                  shipmentId:
+                    existingShipment.id,
+
+                  type:
+                    "COD_COLLECTION",
+
+                  direction:
+                    "CREDIT",
+
+                  amount:
+                    existingShipment.codAmount,
+
+                  description:
+                    `COD collected for shipment ${existingShipment.trackingNumber}`,
+                },
+              });
+            }
+          }
+
+          // ==================================================
+          // NOTIFICATION
+          // ==================================================
+
+          await tx.notification.create({
+            data: {
+              shipmentId:
+                existingShipment.id,
+
+              title:
+                "Shipment Status Updated",
+
+              message:
+                `Shipment ${existingShipment.trackingNumber} is now ${status.replaceAll(
+                  "_",
+                  " "
+                )}.`,
+            },
+          });
         },
 
-        include:
-          shipmentInclude,
+        {
+          timeout: 15000,
+          maxWait: 10000,
+        }
+      );
+
+      // ========================================================
+      // GET UPDATED SHIPMENT
+      // ========================================================
+
+      const shipment =
+        await prisma.shipment.findUnique({
+          where: {
+            id:
+              shipmentId,
+          },
+
+          include:
+            shipmentInclude,
+        });
+
+      return res.status(200).json({
+        message:
+          "Shipment status updated successfully.",
+
+        shipment,
       });
+    } catch (error) {
+      console.error(
+        "UPDATE STATUS ERROR:",
+        error
+      );
 
-    return res.status(200).json({
-      message:
-        "Shipment status updated successfully.",
-
-      shipment,
-    });
-  } catch (error) {
-    console.error(
-      "UPDATE STATUS ERROR:",
-      error
-    );
-
-    return res.status(500).json({
-      message:
-        error?.message ||
-        "Failed to update shipment status.",
-    });
-  }
-};
+      return res.status(500).json({
+        message:
+          error?.message ||
+          "Failed to update shipment status.",
+      });
+    }
+  };
 
 // ============================================================
 // DELETE SHIPMENT
@@ -1557,10 +2816,15 @@ export const updateStatus = async (
 // ============================================================
 
 export const deleteShipment =
-  async (req, res) => {
+  async (
+    req,
+    res
+  ) => {
     try {
       const shipmentId =
-        String(req.params.id);
+        String(
+          req.params.id
+        );
 
       const shipment =
         await prisma.shipment.findUnique({
@@ -1609,16 +2873,25 @@ export const deleteShipment =
 // ============================================================
 
 export const assignRider =
-  async (req, res) => {
+  async (
+    req,
+    res
+  ) => {
     try {
       const shipmentId =
-        String(req.params.id);
+        String(
+          req.params.id
+        );
 
       const numericRiderId =
-        Number(req.body.riderId);
+        Number(
+          req.body.riderId
+        );
 
       if (
-        !Number.isInteger(numericRiderId) ||
+        !Number.isInteger(
+          numericRiderId
+        ) ||
         numericRiderId <= 0
       ) {
         return res.status(400).json({
@@ -1679,9 +2952,8 @@ export const assignRider =
             riderId:
               rider.id,
 
-            // Automatically move:
-            // IN_WAREHOUSE -> ASSIGNED_TO_RIDER
-            ...(shipment.status === "IN_WAREHOUSE" && {
+            ...(shipment.status ===
+              "IN_WAREHOUSE" && {
               status:
                 "ASSIGNED_TO_RIDER",
             }),
@@ -1691,7 +2963,10 @@ export const assignRider =
             shipmentInclude,
         });
 
-      // Tracking
+      // ========================================================
+      // TRACKING
+      // ========================================================
+
       await prisma.tracking.create({
         data: {
           shipmentId:
@@ -1704,7 +2979,11 @@ export const assignRider =
             "Warehouse",
 
           message:
-            `Rider ${rider.user?.name || rider.phone || rider.id} assigned to shipment.`,
+            `Rider ${
+              rider.user?.name ||
+              rider.phone ||
+              rider.id
+            } assigned to shipment.`,
         },
       });
 
@@ -1736,14 +3015,21 @@ export const assignRider =
 // ============================================================
 
 export const addShipmentMessage =
-  async (req, res) => {
+  async (
+    req,
+    res
+  ) => {
     try {
       const {
         message,
         location,
       } = req.body;
 
-      if (!String(message || "").trim()) {
+      if (
+        !String(
+          message || ""
+        ).trim()
+      ) {
         return res.status(400).json({
           message:
             "Message is required.",
@@ -1754,7 +3040,9 @@ export const addShipmentMessage =
         await prisma.shipment.findUnique({
           where: {
             id:
-              String(req.params.id),
+              String(
+                req.params.id
+              ),
           },
         });
 
@@ -1775,11 +3063,15 @@ export const addShipmentMessage =
               shipment.status,
 
             location:
-              String(location || "").trim() ||
+              String(
+                location || ""
+              ).trim() ||
               "Rider Location",
 
             message:
-              String(message).trim(),
+              String(
+                message
+              ).trim(),
           },
         });
 
@@ -1798,7 +3090,7 @@ export const addShipmentMessage =
       return res.status(500).json({
         message:
           error?.message ||
-          "Failed to add shipment message.",
+          "Failed to add delivery message.",
       });
     }
   };

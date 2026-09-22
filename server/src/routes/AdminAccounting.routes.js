@@ -14,6 +14,8 @@ import {
   processSettlement,
   completeSettlement,
   cancelSettlement,
+  createUnregisteredVendor,
+  registerVendorFromAccounting,
 } from "../controller/adminAccountingController.js";
 
 import { authenticate } from "../middlewae/authMiddleware.js";
@@ -90,5 +92,13 @@ router.patch(
   authenticate,
   cancelSettlement
 );
+router.post(
+  "/unregistered-vendors",
+  createUnregisteredVendor
+);
 
+router.patch(
+  "/vendors/:vendorId/register",
+  registerVendorFromAccounting
+);
 export default router;
