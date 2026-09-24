@@ -132,6 +132,17 @@ const shipmentInclude = {
 // POST /api/shipment
 // ============================================================
 
+// ============================================================
+// CREATE SHIPMENT
+//
+// POST /api/shipment
+//
+// totalBox:
+// - Optional
+// - Default = 1
+// - Must be a positive integer
+// ============================================================
+
 export const createShipment = async (req, res) => {
   try {
     // ========================================================
@@ -171,6 +182,11 @@ export const createShipment = async (req, res) => {
 
       packageType,
       weight,
+
+      // ======================================================
+      // TOTAL BOX
+      // ======================================================
+      totalBox,
 
       paymentType,
       codAmount,
@@ -247,6 +263,47 @@ export const createShipment = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "Weight must be greater than 0.",
+      });
+    }
+
+    // ========================================================
+    // TOTAL BOX
+    //
+    // If frontend doesn't send totalBox:
+    //     default = 1
+    //
+    // Examples:
+    //     undefined -> 1
+    //     null      -> 1
+    //     ""        -> 1
+    //     "2"       -> 2
+    //     3         -> 3
+    //
+    // Invalid:
+    //     0
+    //     -1
+    //     1.5
+    //     abc
+    // ========================================================
+
+    let finalTotalBox = 1;
+
+    if (
+      totalBox !== undefined &&
+      totalBox !== null &&
+      totalBox !== ""
+    ) {
+      finalTotalBox = Number(totalBox);
+    }
+
+    if (
+      !Number.isInteger(finalTotalBox) ||
+      finalTotalBox <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Total box must be a positive whole number.",
       });
     }
 
@@ -446,7 +503,7 @@ export const createShipment = async (req, res) => {
     }
 
     // ========================================================
-    // WALK-IN SENDER VALIDATION
+    // WALK-IN / UNREGISTERED SENDER VALIDATION
     // ========================================================
 
     if (!finalVendorId) {
@@ -534,7 +591,7 @@ export const createShipment = async (req, res) => {
       await QRCode.toDataURL(trackingUrl);
 
     // ========================================================
-    // INITIAL TRACKING
+    // INITIAL TRACKING LOCATION
     // ========================================================
 
     const trackingLocation =
@@ -556,6 +613,10 @@ export const createShipment = async (req, res) => {
               data: {
                 trackingNumber,
 
+                // ----------------------------------------------
+                // SENDER
+                // ----------------------------------------------
+
                 senderName:
                   finalSenderName,
 
@@ -564,6 +625,10 @@ export const createShipment = async (req, res) => {
 
                 senderAddress:
                   finalSenderAddress,
+
+                // ----------------------------------------------
+                // RECEIVER
+                // ----------------------------------------------
 
                 receiverName:
                   String(receiverName).trim(),
@@ -574,11 +639,26 @@ export const createShipment = async (req, res) => {
                 receiverAddress:
                   String(receiverAddress).trim(),
 
+                // ----------------------------------------------
+                // PACKAGE
+                // ----------------------------------------------
+
                 packageType:
                   normalizedPackageType,
 
                 weight:
                   finalWeight,
+
+                // ----------------------------------------------
+                // TOTAL BOX
+                // ----------------------------------------------
+
+                totalBox:
+                  finalTotalBox,
+
+                // ----------------------------------------------
+                // PAYMENT
+                // ----------------------------------------------
 
                 paymentType:
                   normalizedPaymentType,
@@ -586,8 +666,16 @@ export const createShipment = async (req, res) => {
                 codAmount:
                   finalCodAmount,
 
+                // ----------------------------------------------
+                // CHARGE
+                // ----------------------------------------------
+
                 shippingCharge:
                   shippingCharge,
+
+                // ----------------------------------------------
+                // OTHER
+                // ----------------------------------------------
 
                 notes:
                   String(notes || "").trim() || null,
@@ -601,6 +689,10 @@ export const createShipment = async (req, res) => {
 
                 status:
                   "CREATED",
+
+                // ----------------------------------------------
+                // RELATIONS
+                // ----------------------------------------------
 
                 vendorId:
                   finalVendorId,
@@ -639,7 +731,7 @@ export const createShipment = async (req, res) => {
             });
 
           // ==================================================
-          // TRACKING
+          // INITIAL TRACKING
           // ==================================================
 
           await tx.tracking.create({
@@ -657,7 +749,10 @@ export const createShipment = async (req, res) => {
                 "Shipment has been created successfully.",
 
               createdBy:
-                String(req.user?.id || role),
+                String(
+                  req.user?.id ||
+                  role
+                ),
             },
           });
 
@@ -685,6 +780,8 @@ export const createShipment = async (req, res) => {
 
           // ==================================================
           // ACCOUNTING
+          //
+          // Only registered vendors have vendor accounting.
           // ==================================================
 
           if (
@@ -768,6 +865,10 @@ export const createShipment = async (req, res) => {
       error
     );
 
+    // ========================================================
+    // PRISMA UNIQUE ERROR
+    // ========================================================
+
     if (error?.code === "P2002") {
       return res.status(409).json({
         success: false,
@@ -776,6 +877,10 @@ export const createShipment = async (req, res) => {
       });
     }
 
+    // ========================================================
+    // PRISMA FOREIGN KEY ERROR
+    // ========================================================
+
     if (error?.code === "P2003") {
       return res.status(400).json({
         success: false,
@@ -783,6 +888,10 @@ export const createShipment = async (req, res) => {
           "Invalid vendor, staff, location rate, or related shipment information.",
       });
     }
+
+    // ========================================================
+    // SERVER ERROR
+    // ========================================================
 
     return res.status(500).json({
       success: false,
@@ -797,7 +906,6 @@ export const createShipment = async (req, res) => {
     });
   }
 };
-
 // ============================================================
 // SCAN SHIPMENT
 //

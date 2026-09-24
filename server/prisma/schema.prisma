@@ -423,6 +423,7 @@ model Shipment {
   weight Float
 
   paymentType PaymentType @default(PREPAID)
+    totalBox Int @default(1)
 
   codAmount Decimal @default(0) @db.Decimal(12, 2)
 

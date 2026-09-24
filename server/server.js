@@ -4,18 +4,18 @@ import cors from "cors";
 import pool from "./db.js";
 import authRoutes from "./src/routes/auth.routes.js";
 import shipmentRoutes from "./src/routes/shipment.routes.js";
-import vendorRoutes from "./src/routes/vendor.routes.js"
+import vendorRoutes from "./src/routes/vendor.routes.js";
 
-import riderRoutes from "./src/routes/rider.routes.js"
+import riderRoutes from "./src/routes/rider.routes.js";
 
-import pickupRoutes from "./src/routes/pickupRoutes.js"
-import locationRoutes from "./src/routes/locationnewroutes.js"
-import locationRateRoutes from "./src/routes/locationRateroutes.js"
-import deliveryTypeRoutes from "./src/routes/deliveryTyperoutes.js"
-import userRoutes from "./src/routes/userRoutes.js"
-import locationMap from "./src/routes/location.routes.js"
-import returnRoutes from "./src/routes/returnRoutes.js"
-import adminAccountingRoutes from "./src/routes/AdminAccounting.routes.js"
+import pickupRoutes from "./src/routes/pickupRoutes.js";
+import locationRoutes from "./src/routes/locationnewroutes.js";
+import locationRateRoutes from "./src/routes/locationRateroutes.js";
+import deliveryTypeRoutes from "./src/routes/deliveryTyperoutes.js";
+import userRoutes from "./src/routes/userRoutes.js";
+import locationMap from "./src/routes/location.routes.js";
+import returnRoutes from "./src/routes/returnRoutes.js";
+import adminAccountingRoutes from "./src/routes/AdminAccounting.routes.js";
 dotenv.config();
 
 const app = express();
@@ -32,7 +32,7 @@ app.use(
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
-  })
+  }),
 );
 
 app.use("/api/shipment", shipmentRoutes);
@@ -41,10 +41,7 @@ app.use("/api/auth", authRoutes);
 
 app.use("/api/vendor", vendorRoutes);
 
-app.use(
-  "/api/admin/accounting",
-  adminAccountingRoutes
-);
+app.use("/api/admin/accounting", adminAccountingRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/locationRate", locationMap);
 //app.use("/api/locationRate", locationRateRoutes);
@@ -53,11 +50,9 @@ app.use("/api/returns", returnRoutes);
 app.use("/api/pickups", pickupRoutes);
 app.use("/api/deliveryType", deliveryTypeRoutes);
 
-
-app.use("/api/location",locationRoutes)
+app.use("/api/location", locationRoutes);
 
 app.use("/api/locationRate", locationRateRoutes);
-
 
 app.get("/", (req, res) => {
   res.send("Server Running");
