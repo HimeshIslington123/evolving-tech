@@ -1227,61 +1227,313 @@ export const getStaffDashboard = async (req, res) => {
 export const getAdminDashboard = async (req, res) => {
   try {
     // ============================================================
-    // ALL DASHBOARD QUERIES RUN IN PARALLEL
+    // 1. READ AND VALIDATE FILTERS
+    // ============================================================
+
+    const allowedPeriods = [
+      "all",
+      "day",
+      "today",
+      "week",
+      "month",
+      "year",
+      "custom",
+    ];
+
+    const period = String(
+      req.query.period || "all"
+    ).toLowerCase();
+
+    if (!allowedPeriods.includes(period)) {
+      return res.status(400).json({
+        message:
+          "Invalid period. Use all, day, today, week, month, year, or custom.",
+      });
+    }
+
+    const requestedWarehouseId =
+      req.query.warehouseId;
+
+    let warehouseId = null;
+
+    if (
+      requestedWarehouseId &&
+      requestedWarehouseId !== "all"
+    ) {
+      warehouseId = Number(requestedWarehouseId);
+
+      if (
+        !Number.isSafeInteger(warehouseId) ||
+        warehouseId <= 0
+      ) {
+        return res.status(400).json({
+          message: "Invalid warehouse ID.",
+        });
+      }
+    }
+
+    // ============================================================
+    // 2. NEPAL TIME HELPERS (UTC +05:45)
+    // ============================================================
+
+    const NEPAL_OFFSET_MINUTES = 345;
+    const NEPAL_OFFSET_MS =
+      NEPAL_OFFSET_MINUTES * 60 * 1000;
+
+    const getNepalDateParts = (date) => {
+      const nepalDate = new Date(
+        date.getTime() + NEPAL_OFFSET_MS
+      );
+
+      return {
+        year: nepalDate.getUTCFullYear(),
+        month: nepalDate.getUTCMonth(),
+        day: nepalDate.getUTCDate(),
+      };
+    };
+
+    const makeNepalDate = (
+      year,
+      month,
+      day
+    ) => {
+      // month is zero-based, matching Date.UTC.
+      return new Date(
+        Date.UTC(year, month, day) -
+          NEPAL_OFFSET_MS
+      );
+    };
+
+    const formatNepalDate = (date) => {
+      const parts = getNepalDateParts(date);
+
+      return [
+        parts.year,
+        String(parts.month + 1).padStart(2, "0"),
+        String(parts.day).padStart(2, "0"),
+      ].join("-");
+    };
+
+    const parseDateInput = (value) => {
+      if (
+        typeof value !== "string" ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(value)
+      ) {
+        return null;
+      }
+
+      const [year, month, day] =
+        value.split("-").map(Number);
+
+      const date = new Date(
+        Date.UTC(year, month - 1, day)
+      );
+
+      if (
+        date.getUTCFullYear() !== year ||
+        date.getUTCMonth() !== month - 1 ||
+        date.getUTCDate() !== day
+      ) {
+        return null;
+      }
+
+      return { year, month: month - 1, day };
+    };
+
+    const now = new Date();
+    const today = getNepalDateParts(now);
+
+    let startDate = null;
+    let endDateExclusive = null;
+
+    let startDateLabel = null;
+    let endDateLabel = null;
+
+    // ============================================================
+    // 3. CALCULATE DATE RANGE
+    //
+    // The end date is exclusive. For example, selecting October 11
+    // includes all records from October 11 in Nepal time.
+    // ============================================================
+
+    if (period === "day" || period === "today") {
+      startDate = makeNepalDate(
+        today.year,
+        today.month,
+        today.day
+      );
+
+      endDateExclusive = makeNepalDate(
+        today.year,
+        today.month,
+        today.day + 1
+      );
+    } else if (period === "week") {
+      // Monday is the first day of the week.
+      const todayUtc = new Date(
+        Date.UTC(
+          today.year,
+          today.month,
+          today.day
+        )
+      );
+
+      const dayOfWeek = todayUtc.getUTCDay();
+
+      const daysSinceMonday =
+        (dayOfWeek + 6) % 7;
+
+      startDate = makeNepalDate(
+        today.year,
+        today.month,
+        today.day - daysSinceMonday
+      );
+
+      endDateExclusive = makeNepalDate(
+        today.year,
+        today.month,
+        today.day - daysSinceMonday + 7
+      );
+    } else if (period === "month") {
+      startDate = makeNepalDate(
+        today.year,
+        today.month,
+        1
+      );
+
+      endDateExclusive = makeNepalDate(
+        today.year,
+        today.month + 1,
+        1
+      );
+    } else if (period === "year") {
+      startDate = makeNepalDate(
+        today.year,
+        0,
+        1
+      );
+
+      endDateExclusive = makeNepalDate(
+        today.year + 1,
+        0,
+        1
+      );
+    } else if (period === "custom") {
+      const parsedStart = parseDateInput(
+        req.query.startDate
+      );
+
+      const parsedEnd = parseDateInput(
+        req.query.endDate
+      );
+
+      if (!parsedStart || !parsedEnd) {
+        return res.status(400).json({
+          message:
+            "Custom date range requires valid startDate and endDate in YYYY-MM-DD format.",
+        });
+      }
+
+      const startUtc = Date.UTC(
+        parsedStart.year,
+        parsedStart.month,
+        parsedStart.day
+      );
+
+      const endUtc = Date.UTC(
+        parsedEnd.year,
+        parsedEnd.month,
+        parsedEnd.day
+      );
+
+      if (startUtc > endUtc) {
+        return res.status(400).json({
+          message:
+            "startDate must be before or equal to endDate.",
+        });
+      }
+
+      startDate = makeNepalDate(
+        parsedStart.year,
+        parsedStart.month,
+        parsedStart.day
+      );
+
+      endDateExclusive = makeNepalDate(
+        parsedEnd.year,
+        parsedEnd.month,
+        parsedEnd.day + 1
+      );
+    }
+
+    if (startDate && endDateExclusive) {
+      startDateLabel = formatNepalDate(startDate);
+
+      // The inclusive end date displayed to the user.
+      endDateLabel = formatNepalDate(
+        new Date(
+          endDateExclusive.getTime() -
+            24 * 60 * 60 * 1000
+        )
+      );
+    }
+
+    // ============================================================
+    // 4. BUILD SHIPMENT FILTER
+    //
+    // These conditions are reused for shipment statistics,
+    // returns related to those shipments, financial totals,
+    // and recent shipments.
+    // ============================================================
+
+    const shipmentWhere = {};
+
+    if (startDate && endDateExclusive) {
+      shipmentWhere.createdAt = {
+        gte: startDate,
+        lt: endDateExclusive,
+      };
+    }
+
+    if (warehouseId !== null) {
+      shipmentWhere.warehouseId = warehouseId;
+    }
+
+    // Pickup has no warehouse relation in the schema shared
+    // previously, so its date filtering is separate.
+    const pickupWhere = {};
+
+    if (startDate && endDateExclusive) {
+      pickupWhere.createdAt = {
+        gte: startDate,
+        lt: endDateExclusive,
+      };
+    }
+
+    // ============================================================
+    // 5. GET WAREHOUSE OPTIONS
     // ============================================================
 
     const [
-      // ==========================================================
-      // PEOPLE
-      // ==========================================================
-
       totalVendors,
       totalStaff,
       totalRiders,
       activeRiders,
       inactiveRiders,
 
-      // ==========================================================
-      // SHIPMENTS
-      // ==========================================================
+      warehouseOptions,
 
-      totalShipments,
-      createdShipments,
-      inWarehouseShipments,
-      assignedToRiderShipments,
-      outForDeliveryShipments,
-      deliveredShipments,
+      shipmentStatusCounts,
       returnedShipments,
-      cancelledShipments,
 
-      // ==========================================================
-      // PICKUPS
-      // ==========================================================
-
-      totalPickups,
-      requestedPickups,
-      assignedPickups,
-      completedPickups,
-      cancelledPickups,
-
-      // ==========================================================
-      // SYSTEM
-      // ==========================================================
+      pickupStatusCounts,
 
       totalLocations,
       totalDeliveryTypes,
       totalWarehouses,
       totalCarriers,
 
-      // ==========================================================
-      // RECENT SHIPMENTS
-      // ==========================================================
-
       recentShipments,
-
-      // ==========================================================
-      // FINANCE
-      // ==========================================================
 
       totalCODResult,
       codCollectedResult,
@@ -1289,9 +1541,10 @@ export const getAdminDashboard = async (req, res) => {
       shippingChargesCollectedResult,
       averageShippingChargeResult,
     ] = await Promise.all([
-      // ==========================================================
+      // ----------------------------------------------------------
       // PEOPLE
-      // ==========================================================
+      // These are system-wide account totals, not period counts.
+      // ----------------------------------------------------------
 
       prisma.vendor.count(),
 
@@ -1311,87 +1564,64 @@ export const getAdminDashboard = async (req, res) => {
         },
       }),
 
-      // ==========================================================
-      // SHIPMENTS
-      // ==========================================================
+      // ----------------------------------------------------------
+      // WAREHOUSES
+      // ----------------------------------------------------------
 
-      prisma.shipment.count(),
-
-      prisma.shipment.count({
-        where: {
-          status: "CREATED",
+      prisma.warehouse.findMany({
+        select: {
+          id: true,
+          name: true,
+          city: true,
+        },
+        orderBy: {
+          name: "asc",
         },
       }),
 
-      prisma.shipment.count({
-        where: {
-          status: "IN_WAREHOUSE",
+      // ----------------------------------------------------------
+      // SHIPMENTS BY STATUS
+      // ----------------------------------------------------------
+
+      prisma.shipment.groupBy({
+        by: ["status"],
+        where: shipmentWhere,
+        _count: {
+          _all: true,
         },
       }),
 
-      prisma.shipment.count({
-        where: {
-          status: "ASSIGNED_TO_RIDER",
-        },
-      }),
-
-      prisma.shipment.count({
-        where: {
-          status: "OUT_FOR_DELIVERY",
-        },
-      }),
-
-      prisma.shipment.count({
-        where: {
-          status: "DELIVERED",
-        },
-      }),
+      // ----------------------------------------------------------
+      // RETURNED SHIPMENTS
+      // Count return requests belonging to shipments that match
+      // the same date and warehouse filters.
+      // ----------------------------------------------------------
 
       prisma.returnRequest.count({
         where: {
           status: "RETURNED_TO_VENDOR",
+          shipment: shipmentWhere,
         },
       }),
 
-      prisma.shipment.count({
-        where: {
-          status: "CANCELLED",
-        },
-      }),
-
-      // ==========================================================
+      // ----------------------------------------------------------
       // PICKUPS
-      // ==========================================================
+      // Date-filtered, but not warehouse-filtered because Pickup
+      // does not have a warehouseId relation in the shared schema.
+      // ----------------------------------------------------------
 
-      prisma.pickup.count(),
-
-      prisma.pickup.count({
-        where: {
-          status: "REQUESTED",
+      prisma.pickup.groupBy({
+        by: ["status"],
+        where: pickupWhere,
+        _count: {
+          _all: true,
         },
       }),
 
-      prisma.pickup.count({
-        where: {
-          status: "ASSIGNED",
-        },
-      }),
-
-      prisma.pickup.count({
-        where: {
-          status: "PICKUP_DONE",
-        },
-      }),
-
-      prisma.pickup.count({
-        where: {
-          status: "CANCELLED",
-        },
-      }),
-
-      // ==========================================================
-      // SYSTEM
-      // ==========================================================
+      // ----------------------------------------------------------
+      // SYSTEM TOTALS
+      // These remain system-wide configuration counts.
+      // ----------------------------------------------------------
 
       prisma.location.count(),
 
@@ -1401,51 +1631,40 @@ export const getAdminDashboard = async (req, res) => {
 
       prisma.carrier.count(),
 
-      // ==========================================================
+      // ----------------------------------------------------------
       // RECENT SHIPMENTS
-      // ==========================================================
+      // ----------------------------------------------------------
 
       prisma.shipment.findMany({
+        where: shipmentWhere,
+
         orderBy: {
           createdAt: "desc",
         },
 
-        take: 3,
+        take: 10,
 
         select: {
           id: true,
-
           trackingNumber: true,
 
           receiverName: true,
-
           receiverPhone: true,
-
           receiverAddress: true,
 
           packageType: true,
-
           weight: true,
 
           paymentType: true,
-
           codAmount: true,
-
           shippingCharge: true,
 
           status: true,
-
           origin: true,
-
           deliveryZone: true,
 
           createdAt: true,
-
           updatedAt: true,
-
-          // ======================================================
-          // VENDOR
-          // ======================================================
 
           vendor: {
             select: {
@@ -1453,10 +1672,6 @@ export const getAdminDashboard = async (req, res) => {
               companyName: true,
             },
           },
-
-          // ======================================================
-          // RIDER
-          // ======================================================
 
           rider: {
             select: {
@@ -1471,10 +1686,6 @@ export const getAdminDashboard = async (req, res) => {
               },
             },
           },
-
-          // ======================================================
-          // RETURN REQUEST
-          // ======================================================
 
           returnRequest: {
             select: {
@@ -1506,10 +1717,6 @@ export const getAdminDashboard = async (req, res) => {
             },
           },
 
-          // ======================================================
-          // WAREHOUSE
-          // ======================================================
-
           warehouse: {
             select: {
               id: true,
@@ -1517,10 +1724,6 @@ export const getAdminDashboard = async (req, res) => {
               city: true,
             },
           },
-
-          // ======================================================
-          // CARRIER
-          // ======================================================
 
           carrier: {
             select: {
@@ -1532,73 +1735,165 @@ export const getAdminDashboard = async (req, res) => {
         },
       }),
 
-      // ==========================================================
-      // FINANCE
-      // ==========================================================
+      // ----------------------------------------------------------
+      // TOTAL COD
+      // ----------------------------------------------------------
 
       prisma.shipment.aggregate({
-        _sum: {
-          codAmount: true,
-        },
-
         where: {
+          ...shipmentWhere,
+
           paymentType: "COD",
 
           status: {
             not: "CANCELLED",
           },
         },
-      }),
 
-      prisma.shipment.aggregate({
         _sum: {
           codAmount: true,
         },
+      }),
 
+      // ----------------------------------------------------------
+      // COD COLLECTED
+      // ----------------------------------------------------------
+
+      prisma.shipment.aggregate({
         where: {
+          ...shipmentWhere,
+
           paymentType: "COD",
 
           status: "DELIVERED",
         },
+
+        _sum: {
+          codAmount: true,
+        },
       }),
 
-      prisma.shipment.aggregate({
-        _sum: {
-          shippingCharge: true,
-        },
+      // ----------------------------------------------------------
+      // SHIPPING CHARGES
+      // ----------------------------------------------------------
 
+      prisma.shipment.aggregate({
         where: {
+          ...shipmentWhere,
+
           status: {
             not: "CANCELLED",
           },
         },
-      }),
 
-      prisma.shipment.aggregate({
         _sum: {
           shippingCharge: true,
         },
+      }),
 
+      // ----------------------------------------------------------
+      // SHIPPING CHARGES COLLECTED
+      // ----------------------------------------------------------
+
+      prisma.shipment.aggregate({
         where: {
+          ...shipmentWhere,
+
           status: "DELIVERED",
+        },
+
+        _sum: {
+          shippingCharge: true,
         },
       }),
 
+      // ----------------------------------------------------------
+      // AVERAGE SHIPPING CHARGE
+      // ----------------------------------------------------------
+
       prisma.shipment.aggregate({
+        where: {
+          ...shipmentWhere,
+
+          status: {
+            not: "CANCELLED",
+          },
+        },
+
         _avg: {
           shippingCharge: true,
-        },
-
-        where: {
-          status: {
-            not: "CANCELLED",
-          },
         },
       }),
     ]);
 
     // ============================================================
-    // FINANCIAL CALCULATIONS
+    // 6. CONVERT SHIPMENT STATUS COUNTS
+    // ============================================================
+
+    const statusCounts = Object.fromEntries(
+      shipmentStatusCounts.map((item) => [
+        item.status,
+        item._count._all,
+      ])
+    );
+
+    const totalShipments =
+      shipmentStatusCounts.reduce(
+        (total, item) =>
+          total + item._count._all,
+        0
+      );
+
+    const createdShipments =
+      statusCounts.CREATED || 0;
+
+    const inWarehouseShipments =
+      statusCounts.IN_WAREHOUSE || 0;
+
+    const assignedToRiderShipments =
+      statusCounts.ASSIGNED_TO_RIDER || 0;
+
+    const outForDeliveryShipments =
+      statusCounts.OUT_FOR_DELIVERY || 0;
+
+    const deliveredShipments =
+      statusCounts.DELIVERED || 0;
+
+    const cancelledShipments =
+      statusCounts.CANCELLED || 0;
+
+    // ============================================================
+    // 7. CONVERT PICKUP STATUS COUNTS
+    // ============================================================
+
+    const pickupCounts = Object.fromEntries(
+      pickupStatusCounts.map((item) => [
+        item.status,
+        item._count._all,
+      ])
+    );
+
+    const totalPickups =
+      pickupStatusCounts.reduce(
+        (total, item) =>
+          total + item._count._all,
+        0
+      );
+
+    const requestedPickups =
+      pickupCounts.REQUESTED || 0;
+
+    const assignedPickups =
+      pickupCounts.ASSIGNED || 0;
+
+    const completedPickups =
+      pickupCounts.PICKUP_DONE || 0;
+
+    const cancelledPickups =
+      pickupCounts.CANCELLED || 0;
+
+    // ============================================================
+    // 8. FINANCIAL CALCULATIONS
     // ============================================================
 
     const totalCOD = Number(
@@ -1615,7 +1910,8 @@ export const getAdminDashboard = async (req, res) => {
     );
 
     const totalShippingCharges = Number(
-      shippingChargesResult._sum.shippingCharge ?? 0
+      shippingChargesResult._sum
+        .shippingCharge ?? 0
     );
 
     const shippingChargesCollected = Number(
@@ -1637,13 +1933,33 @@ export const getAdminDashboard = async (req, res) => {
     );
 
     // ============================================================
-    // RESPONSE
+    // 9. FILTER METADATA
+    // ============================================================
+
+    const filters = {
+      period,
+
+      startDate: startDateLabel,
+
+      endDate: endDateLabel,
+
+      warehouseId:
+        warehouseId === null
+          ? "all"
+          : warehouseId,
+    };
+
+    // ============================================================
+    // 10. RESPONSE
+    //
+    // Existing top-level keys are retained so the current
+    // dashboard can continue using its existing data structure.
     // ============================================================
 
     return res.status(200).json({
-      // ==========================================================
-      // USERS
-      // ==========================================================
+      filters,
+
+      warehouses: warehouseOptions,
 
       users: {
         vendors: totalVendors,
@@ -1652,10 +1968,6 @@ export const getAdminDashboard = async (req, res) => {
         activeRiders,
         inactiveRiders,
       },
-
-      // ==========================================================
-      // SHIPMENTS
-      // ==========================================================
 
       shipments: {
         total: totalShipments,
@@ -1668,10 +1980,6 @@ export const getAdminDashboard = async (req, res) => {
         cancelled: cancelledShipments,
       },
 
-      // ==========================================================
-      // PICKUPS
-      // ==========================================================
-
       pickups: {
         total: totalPickups,
         requested: requestedPickups,
@@ -1680,15 +1988,9 @@ export const getAdminDashboard = async (req, res) => {
         cancelled: cancelledPickups,
       },
 
-      // ==========================================================
-      // FINANCE
-      // ==========================================================
-
       finance: {
         totalCOD,
-
         codCollected,
-
         codPending,
 
         totalShippingCharges,
@@ -1704,23 +2006,12 @@ export const getAdminDashboard = async (req, res) => {
         totalRevenue: totalShippingCharges,
       },
 
-      // ==========================================================
-      // SYSTEM
-      // ==========================================================
-
       system: {
         locations: totalLocations,
-
         deliveryTypes: totalDeliveryTypes,
-
         warehouses: totalWarehouses,
-
         carriers: totalCarriers,
       },
-
-      // ==========================================================
-      // RECENT SHIPMENTS
-      // ==========================================================
 
       recentShipments,
     });
