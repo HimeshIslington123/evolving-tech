@@ -142,6 +142,38 @@ const shipmentInclude = {
 // - Default = 1
 // - Must be a positive integer
 // ============================================================
+// =====================================
+// GET ALL WAREHOUSES
+// GET /api/shipment/warehouses
+// =====================================
+
+export const getWarehouses = async (req, res) => {
+  try {
+    const warehouses = await prisma.warehouse.findMany({
+      orderBy: [
+        { name: "asc" },
+        { city: "asc" },
+      ],
+      select: {
+        id: true,
+        name: true,
+        city: true,
+      },
+    });
+
+    return res.status(200).json({
+      success: true,
+      warehouses,
+    });
+  } catch (error) {
+    console.error("GET WAREHOUSES ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch warehouses.",
+    });
+  }
+};
 
 export const createShipment = async (req, res) => {
   try {
@@ -182,10 +214,6 @@ export const createShipment = async (req, res) => {
 
       packageType,
       weight,
-
-      // ======================================================
-      // TOTAL BOX
-      // ======================================================
       totalBox,
 
       paymentType,
@@ -194,17 +222,17 @@ export const createShipment = async (req, res) => {
       notes,
 
       locationRateId,
+
+      // NEW: Warehouse selected from frontend
+      warehouseId,
     } = req.body;
 
     // ========================================================
     // NORMALIZE
     // ========================================================
 
-    const normalizedPackageType =
-      normalizeUpper(packageType);
-
-    const normalizedPaymentType =
-      normalizeUpper(paymentType);
+    const normalizedPackageType = normalizeUpper(packageType);
+    const normalizedPaymentType = normalizeUpper(paymentType);
 
     // ========================================================
     // RECEIVER VALIDATION
@@ -268,22 +296,8 @@ export const createShipment = async (req, res) => {
 
     // ========================================================
     // TOTAL BOX
-    //
-    // If frontend doesn't send totalBox:
-    //     default = 1
-    //
-    // Examples:
-    //     undefined -> 1
-    //     null      -> 1
-    //     ""        -> 1
-    //     "2"       -> 2
-    //     3         -> 3
-    //
-    // Invalid:
-    //     0
-    //     -1
-    //     1.5
-    //     abc
+    // Default = 1
+    // Must be a positive whole number
     // ========================================================
 
     let finalTotalBox = 1;
@@ -302,8 +316,7 @@ export const createShipment = async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message:
-          "Total box must be a positive whole number.",
+        message: "Total box must be a positive whole number.",
       });
     }
 
@@ -343,6 +356,44 @@ export const createShipment = async (req, res) => {
     }
 
     // ========================================================
+    // WAREHOUSE VALIDATION
+    // NEW
+    // ========================================================
+
+    const finalWarehouseId = Number(warehouseId);
+
+    if (
+      warehouseId === undefined ||
+      warehouseId === null ||
+      String(warehouseId).trim() === "" ||
+      !Number.isInteger(finalWarehouseId) ||
+      finalWarehouseId <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Please select a valid warehouse.",
+      });
+    }
+
+    const warehouse = await prisma.warehouse.findUnique({
+      where: {
+        id: finalWarehouseId,
+      },
+      select: {
+        id: true,
+        name: true,
+        city: true,
+      },
+    });
+
+    if (!warehouse) {
+      return res.status(400).json({
+        success: false,
+        message: "Selected warehouse does not exist.",
+      });
+    }
+
+    // ========================================================
     // LOCATION RATE
     // ========================================================
 
@@ -358,17 +409,15 @@ export const createShipment = async (req, res) => {
       });
     }
 
-    const locationRate =
-      await prisma.locationRate.findUnique({
-        where: {
-          id: finalLocationRateId,
-        },
-
-        include: {
-          location: true,
-          deliveryType: true,
-        },
-      });
+    const locationRate = await prisma.locationRate.findUnique({
+      where: {
+        id: finalLocationRateId,
+      },
+      include: {
+        location: true,
+        deliveryType: true,
+      },
+    });
 
     if (!locationRate) {
       return res.status(404).json({
@@ -382,9 +431,7 @@ export const createShipment = async (req, res) => {
     // ========================================================
 
     const ratePerKg = Number(locationRate.price);
-
-    const shippingCharge =
-      ratePerKg * finalWeight;
+    const shippingCharge = ratePerKg * finalWeight;
 
     if (
       !Number.isFinite(shippingCharge) ||
@@ -400,8 +447,7 @@ export const createShipment = async (req, res) => {
     // DELIVERY ZONE
     // ========================================================
 
-    const deliveryZone =
-      locationRate.location.zone;
+    const deliveryZone = locationRate.location.zone;
 
     // ========================================================
     // DETERMINE ORIGIN
@@ -455,8 +501,7 @@ export const createShipment = async (req, res) => {
       }
 
       if (role === "STAFF") {
-        const staffId =
-          await getAuthenticatedStaff(req);
+        const staffId = await getAuthenticatedStaff(req);
 
         if (!staffId) {
           return res.status(403).json({
@@ -480,19 +525,17 @@ export const createShipment = async (req, res) => {
     let vendor = null;
 
     if (finalVendorId) {
-      vendor =
-        await prisma.vendor.findUnique({
-          where: {
-            id: finalVendorId,
-          },
-
-          select: {
-            id: true,
-            companyName: true,
-            contactId: true,
-            location: true,
-          },
-        });
+      vendor = await prisma.vendor.findUnique({
+        where: {
+          id: finalVendorId,
+        },
+        select: {
+          id: true,
+          companyName: true,
+          contactId: true,
+          location: true,
+        },
+      });
 
       if (!vendor) {
         return res.status(404).json({
@@ -536,24 +579,14 @@ export const createShipment = async (req, res) => {
     // SENDER SNAPSHOT
     // ========================================================
 
-    let finalSenderName =
-      String(senderName || "").trim();
-
-    let finalSenderPhone =
-      String(senderPhone || "").trim();
-
-    let finalSenderAddress =
-      String(senderAddress || "").trim();
+    let finalSenderName = String(senderName || "").trim();
+    let finalSenderPhone = String(senderPhone || "").trim();
+    let finalSenderAddress = String(senderAddress || "").trim();
 
     if (vendor) {
-      finalSenderName =
-        String(vendor.companyName || "").trim();
-
-      finalSenderPhone =
-        String(vendor.contactId || "").trim();
-
-      finalSenderAddress =
-        String(vendor.location || "").trim();
+      finalSenderName = String(vendor.companyName || "").trim();
+      finalSenderPhone = String(vendor.contactId || "").trim();
+      finalSenderAddress = String(vendor.location || "").trim();
 
       if (
         !finalSenderName ||
@@ -572,8 +605,7 @@ export const createShipment = async (req, res) => {
     // TRACKING NUMBER
     // ========================================================
 
-    const trackingNumber =
-      await generateTrackingNumber();
+    const trackingNumber = await generateTrackingNumber();
 
     // ========================================================
     // QR CODE
@@ -584,241 +616,180 @@ export const createShipment = async (req, res) => {
       process.env.FRONTEND_URL ||
       "http://localhost:3000";
 
-    const trackingUrl =
-      `${frontendUrl}/track/${trackingNumber}`;
+    const trackingUrl = `${frontendUrl}/track/${trackingNumber}`;
 
-    const qrCode =
-      await QRCode.toDataURL(trackingUrl);
+    const qrCode = await QRCode.toDataURL(trackingUrl);
 
     // ========================================================
     // INITIAL TRACKING LOCATION
     // ========================================================
 
-    const trackingLocation =
-      locationRate.location.name;
+    const trackingLocation = locationRate.location.name;
 
     // ========================================================
     // TRANSACTION
     // ========================================================
 
-    const result =
-      await prisma.$transaction(
-        async (tx) => {
-          // ==================================================
-          // CREATE SHIPMENT
-          // ==================================================
+    const result = await prisma.$transaction(
+      async (tx) => {
+        // ====================================================
+        // CREATE SHIPMENT
+        // ====================================================
 
-          const shipment =
-            await tx.shipment.create({
-              data: {
-                trackingNumber,
+        const shipment = await tx.shipment.create({
+          data: {
+            trackingNumber,
 
-                // ----------------------------------------------
-                // SENDER
-                // ----------------------------------------------
+            // ----------------------------------------------
+            // SENDER
+            // ----------------------------------------------
 
-                senderName:
-                  finalSenderName,
+            senderName: finalSenderName,
+            senderPhone: finalSenderPhone,
+            senderAddress: finalSenderAddress,
 
-                senderPhone:
-                  finalSenderPhone,
+            // ----------------------------------------------
+            // RECEIVER
+            // ----------------------------------------------
 
-                senderAddress:
-                  finalSenderAddress,
+            receiverName: String(receiverName).trim(),
+            receiverPhone: String(receiverPhone).trim(),
+            receiverAddress: String(receiverAddress).trim(),
 
-                // ----------------------------------------------
-                // RECEIVER
-                // ----------------------------------------------
+            // ----------------------------------------------
+            // PACKAGE
+            // ----------------------------------------------
 
-                receiverName:
-                  String(receiverName).trim(),
+            packageType: normalizedPackageType,
+            weight: finalWeight,
+            totalBox: finalTotalBox,
 
-                receiverPhone:
-                  String(receiverPhone).trim(),
+            // ----------------------------------------------
+            // PAYMENT
+            // ----------------------------------------------
 
-                receiverAddress:
-                  String(receiverAddress).trim(),
+            paymentType: normalizedPaymentType,
+            codAmount: finalCodAmount,
 
-                // ----------------------------------------------
-                // PACKAGE
-                // ----------------------------------------------
+            // ----------------------------------------------
+            // CHARGE
+            // ----------------------------------------------
 
-                packageType:
-                  normalizedPackageType,
+            shippingCharge,
 
-                weight:
-                  finalWeight,
+            // ----------------------------------------------
+            // OTHER
+            // ----------------------------------------------
 
-                // ----------------------------------------------
-                // TOTAL BOX
-                // ----------------------------------------------
+            notes: String(notes || "").trim() || null,
+            qrCode,
+            origin: finalOrigin,
+            deliveryZone,
+            status: "CREATED",
 
-                totalBox:
-                  finalTotalBox,
+            // ----------------------------------------------
+            // RELATIONS
+            // ----------------------------------------------
 
-                // ----------------------------------------------
-                // PAYMENT
-                // ----------------------------------------------
+            vendorId: finalVendorId,
+            createdByStaffId: finalCreatedByStaffId,
+            locationRateId: finalLocationRateId,
 
-                paymentType:
-                  normalizedPaymentType,
+            // NEW: save selected warehouse
+            warehouseId: finalWarehouseId,
+          },
 
-                codAmount:
-                  finalCodAmount,
-
-                // ----------------------------------------------
-                // CHARGE
-                // ----------------------------------------------
-
-                shippingCharge:
-                  shippingCharge,
-
-                // ----------------------------------------------
-                // OTHER
-                // ----------------------------------------------
-
-                notes:
-                  String(notes || "").trim() || null,
-
-                qrCode,
-
-                origin:
-                  finalOrigin,
-
-                deliveryZone,
-
-                status:
-                  "CREATED",
-
-                // ----------------------------------------------
-                // RELATIONS
-                // ----------------------------------------------
-
-                vendorId:
-                  finalVendorId,
-
-                createdByStaffId:
-                  finalCreatedByStaffId,
-
-                locationRateId:
-                  finalLocationRateId,
+          include: {
+            vendor: {
+              select: {
+                id: true,
+                companyName: true,
+                contactId: true,
+                location: true,
               },
+            },
 
+            createdByStaff: {
+              select: {
+                id: true,
+                phone: true,
+              },
+            },
+
+            locationRate: {
               include: {
-                vendor: {
-                  select: {
-                    id: true,
-                    companyName: true,
-                    contactId: true,
-                    location: true,
-                  },
-                },
-
-                createdByStaff: {
-                  select: {
-                    id: true,
-                    phone: true,
-                  },
-                },
-
-                locationRate: {
-                  include: {
-                    location: true,
-                    deliveryType: true,
-                  },
-                },
+                location: true,
+                deliveryType: true,
               },
-            });
+            },
 
-          // ==================================================
-          // INITIAL TRACKING
-          // ==================================================
+            // NEW: return warehouse information
+            warehouse: {
+              select: {
+                id: true,
+                name: true,
+                city: true,
+              },
+            },
+          },
+        });
 
-          await tx.tracking.create({
+        // ====================================================
+        // INITIAL TRACKING
+        // ====================================================
+
+        await tx.tracking.create({
+          data: {
+            shipmentId: shipment.id,
+            status: "CREATED",
+            location: trackingLocation,
+            message: "Shipment has been created successfully.",
+            createdBy: String(req.user?.id || role),
+          },
+        });
+
+        // ====================================================
+        // COD COLLECTION
+        // ====================================================
+
+        if (
+          normalizedPaymentType === "COD" &&
+          finalCodAmount > 0
+        ) {
+          await tx.codCollection.create({
             data: {
-              shipmentId:
-                shipment.id,
-
-              status:
-                "CREATED",
-
-              location:
-                trackingLocation,
-
-              message:
-                "Shipment has been created successfully.",
-
-              createdBy:
-                String(
-                  req.user?.id ||
-                  role
-                ),
+              shipmentId: shipment.id,
+              amount: finalCodAmount,
+              status: "PENDING",
             },
           });
-
-          // ==================================================
-          // COD COLLECTION
-          // ==================================================
-
-          if (
-            normalizedPaymentType === "COD" &&
-            finalCodAmount > 0
-          ) {
-            await tx.codCollection.create({
-              data: {
-                shipmentId:
-                  shipment.id,
-
-                amount:
-                  finalCodAmount,
-
-                status:
-                  "PENDING",
-              },
-            });
-          }
-
-          // ==================================================
-          // ACCOUNTING
-          //
-          // Only registered vendors have vendor accounting.
-          // ==================================================
-
-          if (
-            finalVendorId &&
-            shippingCharge > 0
-          ) {
-            await tx.accountingEntry.create({
-              data: {
-                vendorId:
-                  finalVendorId,
-
-                shipmentId:
-                  shipment.id,
-
-                type:
-                  "SHIPPING_CHARGE",
-
-                direction:
-                  "DEBIT",
-
-                amount:
-                  shippingCharge,
-
-                description:
-                  `Shipping charge for shipment ${trackingNumber}`,
-              },
-            });
-          }
-
-          return shipment;
-        },
-
-        {
-          timeout: 15000,
-          maxWait: 10000,
         }
-      );
+
+        // ====================================================
+        // ACCOUNTING
+        // Only registered vendors have vendor accounting.
+        // ====================================================
+
+        if (finalVendorId && shippingCharge > 0) {
+          await tx.accountingEntry.create({
+            data: {
+              vendorId: finalVendorId,
+              shipmentId: shipment.id,
+              type: "SHIPPING_CHARGE",
+              direction: "DEBIT",
+              amount: shippingCharge,
+              description: `Shipping charge for shipment ${trackingNumber}`,
+            },
+          });
+        }
+
+        return shipment;
+      },
+      {
+        timeout: 15000,
+        maxWait: 10000,
+      }
+    );
 
     // ========================================================
     // NOTIFICATION
@@ -827,14 +798,9 @@ export const createShipment = async (req, res) => {
     try {
       await prisma.notification.create({
         data: {
-          shipmentId:
-            result.id,
-
-          title:
-            "Shipment Created",
-
-          message:
-            `Shipment ${result.trackingNumber} has been created successfully.`,
+          shipmentId: result.id,
+          title: "Shipment Created",
+          message: `Shipment ${result.trackingNumber} has been created successfully.`,
         },
       });
     } catch (notificationError) {
@@ -851,19 +817,14 @@ export const createShipment = async (req, res) => {
     return res.status(201).json({
       success: true,
 
-      message:
-        finalVendorId
-          ? "Registered vendor shipment created successfully."
-          : "Unregistered customer shipment created successfully.",
+      message: finalVendorId
+        ? "Registered vendor shipment created successfully."
+        : "Unregistered customer shipment created successfully.",
 
-      shipment:
-        result,
+      shipment: result,
     });
   } catch (error) {
-    console.error(
-      "CREATE SHIPMENT ERROR:",
-      error
-    );
+    console.error("CREATE SHIPMENT ERROR:", error);
 
     // ========================================================
     // PRISMA UNIQUE ERROR
@@ -885,7 +846,7 @@ export const createShipment = async (req, res) => {
       return res.status(400).json({
         success: false,
         message:
-          "Invalid vendor, staff, location rate, or related shipment information.",
+          "Invalid warehouse, vendor, staff, location rate, or related shipment information.",
       });
     }
 
@@ -895,10 +856,7 @@ export const createShipment = async (req, res) => {
 
     return res.status(500).json({
       success: false,
-
-      message:
-        "Failed to create shipment.",
-
+      message: "Failed to create shipment.",
       error:
         process.env.NODE_ENV === "development"
           ? error?.message

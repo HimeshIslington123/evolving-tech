@@ -18,6 +18,7 @@ import {
   getMyRiderShipments,
   scanShipment,
   scanShipmentAction,
+  getWarehouses,
 } from "../controller/shipment.controller.js";
 
 const router = express.Router();
@@ -29,6 +30,12 @@ router.post(
   "/",
   authenticate,
   createShipment
+);
+
+router.get(
+  "/warehouses",
+  authenticate,
+  getWarehouses
 );
 
 // =====================================

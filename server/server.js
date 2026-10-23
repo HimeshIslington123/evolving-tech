@@ -15,7 +15,11 @@ import deliveryTypeRoutes from "./src/routes/deliveryTyperoutes.js";
 import userRoutes from "./src/routes/userRoutes.js";
 import locationMap from "./src/routes/location.routes.js";
 import returnRoutes from "./src/routes/returnRoutes.js";
+import warehouseRoute from "./src/routes/warehouseRoutes.js";
 import adminAccountingRoutes from "./src/routes/AdminAccounting.routes.js";
+
+
+
 dotenv.config();
 
 const app = express();
@@ -36,7 +40,7 @@ app.use(
 );
 
 app.use("/api/shipment", shipmentRoutes);
-
+app.use("/api/warehouse", warehouseRoute);
 app.use("/api/auth", authRoutes);
 
 app.use("/api/vendor", vendorRoutes);
@@ -51,6 +55,8 @@ app.use("/api/pickups", pickupRoutes);
 app.use("/api/deliveryType", deliveryTypeRoutes);
 
 app.use("/api/location", locationRoutes);
+
+
 
 app.use("/api/locationRate", locationRateRoutes);
 
